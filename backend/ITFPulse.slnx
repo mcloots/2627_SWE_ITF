@@ -1,0 +1,10 @@
+<Solution>
+  <Project Path="src/ITFPulse.Api/ITFPulse.Api.csproj" Id="b1c14984-b468-4652-aa8a-0ba5b4700456" />
+  <Project Path="src/ITFPulse.Application/ITFPulse.Application.csproj" Id="fd774f6f-5407-4ff4-84f9-c12c9496cf51" />
+  <Project Path="src/ITFPulse.Contracts/ITFPulse.Contracts.csproj" Id="178ca364-a1b3-487b-b7e8-bd3cb468026f" />
+  <Project Path="src/ITFPulse.Domain/ITFPulse.Domain.csproj" Id="10aaaee9-c3b5-49a1-8e0f-5a727f4c8acf" />
+  <Project Path="src/ITFPulse.Infrastructure/ITFPulse.Infrastructure.csproj" Id="2dc2dc56-621f-4f34-8acf-221039e507e9" />
+  <Project Path="tests/ITFPulse.Application.Tests/ITFPulse.Application.Tests.csproj" Id="856373d7-9b57-4fb2-9b29-bab2915fc01b" />
+  <Project Path="tests/ITFPulse.Architecture.Tests/ITFPulse.Architecture.Tests.csproj" Id="d6778b7d-5332-4c95-ad07-398438c999db" />
+  <Project Path="tests/ITFPulse.Domain.Tests/ITFPulse.Domain.Tests.csproj" Id="f0aa55b9-3f07-4428-8c12-fdae79a02bb2" />
+</Solution>

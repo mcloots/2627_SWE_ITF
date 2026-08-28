@@ -1,0 +1,40 @@
+<app-page-title
+  title="Health Check"
+  subtitle="Basic connectivity check between Angular and the ITF Pulse API.">
+</app-page-title>
+
+<app-card>
+  @if (isLoading()) {
+    <p class="text-sm text-slate-600">Loading health status...</p>
+  }
+
+  @if (isError()) {
+    <div class="space-y-2">
+      <p class="font-medium text-red-600">API connection failed.</p>
+      <p class="text-sm text-slate-700">{{ error() }}</p>
+    </div>
+  }
+
+  @if (isLoaded() && health(); as healthValue) {
+    <div class="space-y-3">
+      <p class="text-sm text-slate-700">
+        <span class="font-semibold text-slate-900">Status:</span>
+        {{ healthValue.status }}
+      </p>
+
+      <p class="text-sm text-slate-700">
+        <span class="font-semibold text-slate-900">Service:</span>
+        {{ healthValue.service }}
+      </p>
+
+      <p class="text-sm text-slate-700">
+        <span class="font-semibold text-slate-900">Timestamp:</span>
+        {{ healthValue.timestamp | date:'medium' }}
+      </p>
+
+      <hr class="border-slate-200" />
+
+      <pre class="overflow-x-auto rounded-xl bg-slate-100 p-4 text-xs text-slate-800">{{ healthValue | json }}</pre>
+    </div>
+  }
+</app-card>
