@@ -7,11 +7,17 @@ using System.Text;
 
 namespace ITFPulse.Domain.Posts
 {
-    internal class Comment
+    public class Comment
     {
         public Guid Id { get; private set; }
         public CommentContent CommentContent { get; private set; }
         public CreatedAt CreatedAt { get; private set; }
+
+        private Comment()
+        {
+            CommentContent = null!;
+            CreatedAt = null!;
+        }
 
         internal Comment(
         Guid id,

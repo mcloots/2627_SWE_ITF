@@ -6,28 +6,34 @@ using System.Text;
 
 namespace ITFPulse.Domain.Posts
 {
-    internal class Post
+    public class Post
     {
-        private readonly List<Comment> _comments = [];
-
         public Guid Id { get; private set; }
 
         public PostContent PostContent { get; private set; }
 
         public CreatedAt CreatedAt { get; private set; }
 
+        // User creates a post, but in domain language we talk about the Author of the post
+        public Guid AuthorId { get; private set; }
+
+        private readonly List<Comment> _comments = [];
+
         public IReadOnlyCollection<Comment> Comments =>
             _comments.AsReadOnly();
 
+        // private constructor needed for EF Core
         private Post()
         {
-            // Required by EF Core
+            // Used only by EF Core
             PostContent = null!;
             CreatedAt = null!;
         }
 
-        public Post(
+        // A post can only be created through the Create method => Factory method
+        private Post(
             Guid id,
+            Guid authorId,
             PostContent postContent,
             CreatedAt createdAt)
         {
@@ -39,11 +45,29 @@ namespace ITFPulse.Domain.Posts
             }
 
             Id = id;
+            AuthorId = authorId;
             PostContent = postContent
                 ?? throw new ArgumentNullException(nameof(postContent));
 
             CreatedAt = createdAt
                 ?? throw new ArgumentNullException(nameof(createdAt));
+        }
+
+        // Factory method for creating a post
+        // This reads like domain language: we are creating a new post
+        public static Post Create(
+        Guid authorId,
+        string content,
+        DateTimeOffset createdAt)
+        {
+            if (authorId == Guid.Empty)
+                throw new ArgumentException("An author is required.");
+
+            return new Post(
+                Guid.NewGuid(),
+                authorId,
+                new PostContent(content),
+                new CreatedAt(createdAt));
         }
 
         public void Edit(string newContent)
@@ -54,8 +78,7 @@ namespace ITFPulse.Domain.Posts
         public void AddComment(
             Guid commentId,
             string content,
-            DateTimeOffset createdAt,
-            DateTimeOffset currentTime)
+            DateTimeOffset createdAt)
         {
             if (_comments.Any(comment => comment.Id == commentId))
             {
@@ -66,7 +89,7 @@ namespace ITFPulse.Domain.Posts
             var comment = new Comment(
                 commentId,
                 new CommentContent(content),
-                new CreatedAt(createdAt, currentTime));
+                new CreatedAt(createdAt));
 
             _comments.Add(comment);
         }

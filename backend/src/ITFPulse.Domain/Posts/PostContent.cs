@@ -4,7 +4,7 @@ using System.Text;
 
 namespace ITFPulse.Domain.Posts
 {
-    internal class PostContent
+    public class PostContent
     {
         public const int MaximumLength = 2000;
 

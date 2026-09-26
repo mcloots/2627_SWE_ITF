@@ -1,4 +1,6 @@
 using DotNetEnv;
+using ITFPulse.Application;
+using ITFPulse.Infrastructure;
 
 Env.Load();
 
@@ -7,6 +9,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddEnvironmentVariables("ITFPULSE_");
 
 // Add services to the container.
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure(builder.Configuration);
 
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi

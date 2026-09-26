@@ -4,7 +4,7 @@ using System.Text;
 
 namespace ITFPulse.Domain.Posts
 {
-    internal class CommentContent
+    public class CommentContent
     {
         public const int MaximumLength = 500;
 

@@ -14,12 +14,11 @@ namespace ITFPulse.Domain.Notifications
 
         public Notification(
             string message,
-            DateTimeOffset createdAt,
-            DateTimeOffset currentTime)
+            DateTimeOffset createdAt)
         {
             Id = Guid.NewGuid();
             NotificationMessage = new NotificationMessage(message);
-            CreatedAt = new CreatedAt(createdAt, currentTime);
+            CreatedAt = new CreatedAt(createdAt);
         }
     }
 }
