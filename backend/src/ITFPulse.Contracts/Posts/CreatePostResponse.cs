@@ -1,4 +1,4 @@
-﻿namespace ITFPulse.Api.Posts
+﻿namespace ITFPulse.Contracts.Posts
 {
     public sealed record CreatePostResponse(
     Guid PostId);

@@ -1,6 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 
-namespace ITFPulse.Api.Posts
+namespace ITFPulse.Contracts.Posts
 {
     public sealed class CreatePostRequest
     {

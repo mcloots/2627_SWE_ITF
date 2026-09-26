@@ -1,4 +1,5 @@
 ﻿using ITFPulse.Application.Posts.CreatePosts;
+using ITFPulse.Contracts.Posts;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
