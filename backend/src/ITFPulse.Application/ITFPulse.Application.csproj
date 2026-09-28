@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ITFPulse.Domain\ITFPulse.Domain.csproj" />
+    <ProjectReference Include="..\ITFPulse.Contracts\ITFPulse.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

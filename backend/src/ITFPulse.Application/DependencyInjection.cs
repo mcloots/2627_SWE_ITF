@@ -12,6 +12,8 @@ namespace ITFPulse.Application
             this IServiceCollection services)
         {
             services.AddScoped<CreatePostHandler>();
+            services.AddScoped<ITFPulse.Application.Feeds.PlanPostFanoutHandler>();
+            services.AddScoped<ITFPulse.Application.Feeds.DeliverPostToFollowersHandler>();
 
             return services;
         }

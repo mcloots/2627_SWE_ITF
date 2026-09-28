@@ -24,6 +24,7 @@ namespace ITFPulse.Infrastructure
                 options.UseNpgsql(connectionString));
 
             services.AddScoped<IPostRepository, PostRepository>();
+            services.AddScoped<ITFPulse.Application.Feeds.IFeedStore, FeedStore>();
 
             services.AddSingleton<IClock, SystemClock>();
 

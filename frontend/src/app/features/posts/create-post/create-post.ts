@@ -20,7 +20,7 @@ export class CreatePost {
   private readonly destroyRef = inject(DestroyRef);
 
   // Test-only author. With authentication, the API should use the logged-in user's identity.
-  readonly authorId = signal(crypto.randomUUID());
+  readonly authorId = signal<string>(crypto.randomUUID());
   readonly content = signal('');
   readonly state = signal<SaveState>('idle');
   readonly post = signal<CreatePostResponse | null>(null);
@@ -53,7 +53,6 @@ export class CreatePost {
       next: (response) => {
         this.post.set(response);
         this.content.set('');
-        this.authorId.set(crypto.randomUUID());
         this.state.set('saved');
       },
       error: (error: unknown) => {

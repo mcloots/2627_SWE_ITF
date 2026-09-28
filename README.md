@@ -20,6 +20,12 @@ You are expected to **understand the structure**, not just use it.
 
 # Project Overview
 
+## Week 5: distribute posts to followers
+
+The project now includes RabbitMQ messaging, transactional outboxes, bounded fan-out workers,
+and an eventually consistent personal feed. See the [English Week 5 guide](docs/week5/README.md)
+for architecture decisions, Docker startup, failure-recovery tests and a one-million-feed-entry load demo.
+
 ITF Pulse is a **social media platform** where users can:
 
 - Create posts  

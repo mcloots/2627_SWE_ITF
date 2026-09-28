@@ -1,0 +1,28 @@
+{
+  "recordedAt": "2026-09-28T19:15:27.984Z",
+  "authorId": "13e79844-cb23-48e7-8670-effb309409a4",
+  "firstFollower": "60655fdf-9b98-46e5-8ca9-31c86d7fa86a",
+  "followers": 10000,
+  "posts": 100,
+  "workers": 1,
+  "httpConcurrency": 16,
+  "consumerConcurrencyPerWorker": "8 (compose default)",
+  "prefetchPerWorker": "16 (compose default)",
+  "expectedFeedEntries": 1000000,
+  "verifiedFeedEntries": 1000000,
+  "expectedBatches": 2000,
+  "acceptanceSeconds": 0.14908369999999924,
+  "acceptedPostsPerSecond": 670.7641412173197,
+  "httpP50Ms": 20.671800000000076,
+  "httpP95Ms": 31.477500000000873,
+  "httpMaxMs": 37.69940000000133,
+  "drainSecondsIncludingWorkerStart": 30.647371100000004,
+  "feedEntriesPerSecond": 32629.226067615302,
+  "host": {
+    "platform": "win32",
+    "cpu": "AMD Ryzen 7 PRO 250 w/ Radeon 780M Graphics    ",
+    "logicalCpus": 16,
+    "memoryGiB": 31.278553009033203
+  },
+  "caveats": "Local single-node broker and PostgreSQL; not a production capacity guarantee. Drain includes worker startup and <=500ms polling. Followers are seeded before posts. API acceptance is measured with delivery stopped; no synchronous baseline. Compare repeated runs under equal resource limits."
+}

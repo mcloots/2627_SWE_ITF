@@ -1,0 +1,30 @@
+<app-page-title title="Your feed" subtitle="New posts from the authors you follow arrive here." />
+<app-card>
+  <div class="space-y-4" [attr.aria-busy]="busy()">
+    <p class="text-sm text-slate-600">For this course demo, choose user IDs manually. Follow an author before they publish a post.</p>
+    <div>
+      <label for="feed-follower" class="mb-1 block text-sm font-medium">Your follower ID</label>
+      <input id="feed-follower" class="w-full rounded-lg border border-slate-300 px-3 py-2" [ngModel]="followerId()" (ngModelChange)="changeFollower($event)" [disabled]="busy()" />
+    </div>
+    <div>
+      <label for="feed-author" class="mb-1 block text-sm font-medium">Author ID to follow</label>
+      <input id="feed-author" class="w-full rounded-lg border border-slate-300 px-3 py-2" [ngModel]="authorId()" (ngModelChange)="authorId.set($event)" [disabled]="busy()" placeholder="Copy the author ID from Create Post" />
+    </div>
+    <div class="flex gap-3">
+      <button type="button" class="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" [disabled]="busy() || !authorId().trim() || !followerId().trim()" (click)="follow()">Follow author</button>
+      <button type="button" class="rounded-lg border border-slate-300 px-4 py-2 text-sm disabled:opacity-50" [disabled]="busy() || !followerId().trim()" (click)="refresh()">Refresh feed</button>
+    </div>
+    <p aria-live="polite" class="text-sm" [class.text-red-700]="error()">{{ message() }}</p>
+  </div>
+</app-card>
+<div class="mt-6 space-y-4">
+  @for (post of items(); track post.postId) {
+    <app-card>
+      <p class="mb-2 break-all text-xs text-slate-500">{{ post.authorId }} · {{ post.createdAt | date:'medium' }}</p>
+      <p class="whitespace-pre-wrap break-words text-slate-900">{{ post.content }}</p>
+    </app-card>
+  }
+  @if (cursor()) {
+    <button type="button" class="rounded-lg border border-slate-300 px-4 py-2" [disabled]="busy()" (click)="refresh(true)">Load older deliveries</button>
+  }
+</div>

@@ -11,14 +11,14 @@
         type="text"
         required
         class="w-full rounded-lg border border-slate-300 px-3 py-2"
-        readonly
         aria-describedby="author-help"
         [ngModel]="authorId()"
+        (ngModelChange)="authorId.set($event)"
         [disabled]="isSaving()"
       />
       <p id="author-help" class="mt-1 text-sm text-slate-500">
-        A dummy UUID is generated automatically for each new test post. In the real application,
-        the author ID comes from the logged-in user.
+        Use this test author's ID to follow them on the feed page before publishing.
+        You can paste another test UUID here. In the real application, identity comes from login.
       </p>
     </div>
 
@@ -54,6 +54,7 @@
   @if (state() === 'saved' && post(); as createdPost) {
     <app-card>
       <h2 class="mb-2 text-lg font-semibold text-slate-900">Post created</h2>
+      <p class="mb-2 text-sm text-slate-600">Your post is saved. It will appear in your followers' feeds shortly.</p>
       <p class="break-all text-sm text-slate-700"><strong>Post ID:</strong> {{ createdPost.postId }}</p>
     </app-card>
   }

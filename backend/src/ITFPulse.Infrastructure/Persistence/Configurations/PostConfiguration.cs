@@ -44,6 +44,8 @@ namespace ITFPulse.Infrastructure.Persistence.Configurations
 
             // Comments are not part of this vertical slice yet.
             builder.Ignore(post => post.Comments);
+            builder.Ignore(post => post.DomainEvents);
+            builder.HasIndex(post => post.AuthorId);
         }
     }
 }

@@ -1,6 +1,8 @@
 using DotNetEnv;
 using ITFPulse.Application;
 using ITFPulse.Infrastructure;
+using ITFPulse.Infrastructure.Messaging;
+using ITFPulse.Api.Feeds;
 
 Env.Load();
 
@@ -11,6 +13,7 @@ builder.Configuration.AddEnvironmentVariables("ITFPULSE_");
 // Add services to the container.
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddFeedMessaging(builder.Configuration);
 
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
@@ -49,5 +52,6 @@ app.UseAuthorization();
 app.UseCors("DefaultCorsPolicy");
 
 app.MapControllers();
+app.MapFanoutDemo();
 
 app.Run();

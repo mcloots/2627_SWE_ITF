@@ -1,0 +1,270 @@
+﻿Week 5 — Messaging, queues and events
+English teaching manuscript
+Visual reference: Week02_VerticalSlice.pptx (54 source slides)
+Audience: Software Engineering students continuing the ITF Pulse vertical slice.
+
+01 — Messaging, queues and events
+Week 5 — Software Engineering
+Speaker notes: Today we extend the Week 2 post-creation slice into an asynchronous feed-distribution pipeline. Students should be able to explain where consistency is required, where delay is acceptable, and how to measure the result.
+Source pattern: source slide 1, title and subtitle.
+
+02 — Our mission
+As an author, I want to publish a post without waiting for every follower's feed to update.
+Speaker notes: Keep the language close to the earlier user story. The user wants a saved post; followers need eventual delivery. These are connected responsibilities with different completion times. Show the existing CreatePostHandler before introducing messaging.
+Source pattern: source slide 8, user story.
+
+03 — One post creates much more work
+100 posts
+10,000 followers per author
+1,000,000 feed references
+Speaker notes: These are workload dimensions, not measured throughput. Multiplication exposes write amplification: 100 × 10,000 = 1,000,000. With 500 followers per command, delivery needs 2,000 batch commands rather than one million individual commands.
+Source pattern: source slide 6, title and bullet list.
+
+04 — What must happen before we respond?
+Validate the post
+Save the post
+Record durable publication intent
+Distribute to followers afterwards
+Speaker notes: Ask which operations must complete before returning 201. Domain invariants and persistence are immediate. Fan-out can be asynchronous. The frontend must say saved, with delivery following shortly; it must not promise completed distribution.
+Source pattern: source slide 10, rules and question.
+
+05 — 01 Events and responsibilities
+Connect messaging to the domain
+Speaker notes: Start with business language rather than RabbitMQ APIs.
+Source pattern: source slide 5, section divider.
+
+06 — An event states a fact
+PostCreated
+Something has already happened
+It does not name the next consumer
+Speaker notes: The Post aggregate records a domain event only after the factory has validated the author, content and creation time. It never opens a connection to a broker. Domain/Posts/PostCreated.cs contains immutable identifiers and time; Post.DomainEvents is ignored by EF mapping.
+Source pattern: source slide 11, title and body.
+
+07 — A command asks for work
+PlanPostFanoutV1
+DeliverPostToFollowersV1
+One logical owner for each command
+Speaker notes: Commands have imperative names and target known queues. Multiple replicas of that owner compete for messages. Contrast this with publishing PostCreatedV1 to an exchange, where independent subscribers can each obtain a copy.
+Source pattern: source slide 17, use-case names and explanation.
+
+08 — Domain and integration events differ
+PostCreated belongs to the model
+PostCreatedV1 crosses a process boundary
+Translate explicitly before committing
+Speaker notes: Domain events can evolve with the model. Integration contracts need a compatibility policy. Never serialize an EF aggregate or its navigation graph. PostRepository translates the event into the V1 contract, preserving EventId as the transport message ID. Unknown domain event types fail loudly. Contracts has no broker dependency.
+Source pattern: source slide 6, title and bullet list.
+
+09 — The dependency rule still holds
+Domain: business facts and invariants
+Application: planning and delivery use cases
+Infrastructure: SQL, RabbitMQ and reliability
+Speaker notes: Application defines IFeedStore and IFeedWorkQueue. Infrastructure implements them and wraps the handlers in consumers. API and Worker are composition roots. Architecture tests check that Domain, Application and Contracts cannot reference MassTransit, RabbitMQ, EF Core or Npgsql. The worker process is outside the inner layers.
+Source pattern: source slide 18, architecture labels and responsibilities.
+
+10 — Follow relationships stay outside Post
+A post remains a small aggregate
+Followers belong to a separate relationship
+A feed is a query model
+Speaker notes: Putting thousands of followers or feed entries inside the Post aggregate would make every post load and save much larger. Follow.Create enforces valid identities and prevents self-follow. A feed entry references the source post; it is not another Post aggregate. Our shared database makes this an evolving modular application, not fully independent microservices.
+Source pattern: source slide 6, title and bullet list.
+
+11 — 02 Reliable publication
+Bridge the database and the broker
+Speaker notes: Introduce the dual-write problem before naming the pattern.
+Source pattern: source slide 34, section divider.
+
+12 — Two writes leave a failure window
+Save post, then publish
+What if the process stops between them?
+Publish, then save
+What if the database rejects the post?
+Speaker notes: Neither order makes two independent systems atomic. A try/catch cannot undo a message already consumed. Publishing inside a database transaction does not include RabbitMQ in that transaction. We need durable intent inside the same database commit.
+Source pattern: source slide 9, questions.
+
+13 — Commit the post and its outbox together
+One PostgreSQL transaction
+Post row + serialized message
+Return 201 after that commit
+Speaker notes: In PostRepository, scoped IPublishEndpoint is replaced by the MassTransit EF bus outbox. Publish adds the message to the scoped context. SaveChanges commits both records. Do not replace it with IBus.Publish, which bypasses this request outbox. Domain events are cleared only after successful persistence.
+Sources: https://masstransit.io/documentation/configuration/middleware/outbox
+Source pattern: source slide 6, title and bullet list.
+
+14 — Broker delivery can happen later
+Read committed outbox work
+Publish with transport confirmation
+Retry when the broker recovers
+Speaker notes: The outbox delivery service operates independently of the HTTP request. The verification stops RabbitMQ, creates a post, restarts the API and checks that the missing feed work is recovered. A crash after publication but before marking delivery complete can repeat a message. The outbox therefore solves lost intent, not duplicate delivery.
+Sources: https://masstransit.io/documentation/patterns/transactional-outbox
+Sources: https://www.rabbitmq.com/docs/confirms
+Source pattern: source slide 6, title and bullet list.
+
+15 — Create the subscription before publishing
+Declare exchanges, queues and bindings
+Apply database migrations once
+Start API and worker replicas afterwards
+Speaker notes: A durable publisher confirmation does not mean a future subscriber will receive history. The --initialize process deploys topology before the API begins publishing. Compose waits for successful initialization. Durable queues keep work while consumers are offline; queues that do not yet exist cannot keep it. Never run schema migrations independently in every worker replica.
+Sources: https://masstransit.io/documentation/configuration/transports/rabbitmq
+Source pattern: source slide 6, title and bullet list.
+
+16 — 03 Distribute the work
+A bounded fan-out pipeline
+Speaker notes: Connect the earlier event/command distinction to real queues.
+Source pattern: source slide 41, section divider.
+
+17 — Plan pages; deliver batches
+PostCreatedV1 → initial planning command
+Planner → 500 follower IDs per batch
+Delivery workers → parallel database writes
+Speaker notes: Trace one post through the three queues in RabbitMQ. The planner emits a delivery command and a continuation. Delivery commands from the same post can execute in parallel. A single all-followers task would retry too much work; one task per follower would add excessive messaging overhead.
+Source pattern: source slide 6, title and bullet list.
+
+18 — Page through followers with a cursor
+Filter by author and creation-time cutoff
+Read IDs after the last processed ID
+Order by ID; take at most 500
+Speaker notes: Show FeedStore.GetFollowersAsync. The composite author/id index supports keyset pagination. We avoid increasingly expensive offsets and unbounded ToList calls. FollowedAt is compared with post CreatedAt, so later follows do not receive older posts. Concurrent commits and cross-host clock skew still mean this is not a globally atomic historical snapshot. The fixture completes all follows first.
+Source pattern: source slide 6, title and bullet list.
+
+19 — Do not lose the next page
+Send the delivery batch
+Send the continuation
+Commit both through the consumer outbox
+Speaker notes: If a planner page acknowledges before its next command is durable, the rest of the audience could be skipped. The EF consumer outbox coordinates the inbox and outgoing commands. The continuation advances to the last follower ID. A full final page may produce one empty continuation; it safely terminates without delivery.
+Sources: https://masstransit.io/documentation/configuration/middleware/outbox
+Source pattern: source slide 6, title and bullet list.
+
+20 — Write references in one database operation
+INSERT ... SELECT FROM unnest(...)
+ON CONFLICT DO NOTHING
+Keep the full post body in one place
+Speaker notes: Open FeedStore.DeliverAsync. A typed UUID array is sent as a parameter, never concatenated into SQL. Each worker issues one set-based insert for up to 500 followers. The feed joins the source post on read. Batch size bounds memory, SQL work and the cost of repeating a delivery.
+Sources: https://www.postgresql.org/docs/17/sql-insert.html
+Source pattern: source slide 6, title and bullet list.
+
+21 — Duplicate delivery must be harmless
+Unique key: follower ID + post ID
+Replayed batch: zero duplicate entries
+Message ID is not the business invariant
+Speaker notes: Transport inbox deduplication has a one-hour retention window in this example. The unique feed key protects the effect even after that window, or when someone republishes the same logical batch with a different message ID. verify.mjs deliberately sends new IDs to exercise this. Do not claim end-to-end exactly-once delivery.
+Sources: https://www.rabbitmq.com/docs/confirms
+Sources: https://www.postgresql.org/docs/17/sql-insert.html
+Source pattern: source slide 10, invariants.
+
+22 — Retries need an end
+Brief transient failure → bounded retry
+Invalid command → no retry
+Exhausted failure → inspectable error queue
+Speaker notes: There are three short retries: 100 ms, 500 ms and 1 s. ArgumentException is excluded. An invalid delivery ends up in itfpulse-deliver-feed-v1_error. Show exception headers and discuss diagnosis before replay. Long outages require delayed redelivery or operational recovery rather than occupying every consumer slot with long in-memory retries.
+Sources: https://masstransit.io/documentation/concepts/exceptions
+Source pattern: source slide 6, title and bullet list.
+
+23 — Concurrency is a budget
+8 concurrent messages per delivery worker
+16 prefetched messages per worker
+More replicas share the same queue
+Speaker notes: Prefetch bounds unacknowledged deliveries and helps keep consumers busy; it does not set the number of database writes by itself. Worker concurrency limits active processing. Four workers can attempt more simultaneous batches, but still share PostgreSQL and RabbitMQ. More connections and contention can reduce throughput.
+Sources: https://www.rabbitmq.com/docs/confirms
+Source pattern: source slide 6, title and bullet list.
+
+24 — The feed is eventually consistent
+Saved does not mean delivered everywhere
+Batches can complete out of order
+Refresh to see new arrivals
+Speaker notes: Walk through the UI. It shows a saved post and makes no completion promise. Feed pagination uses a delivery sequence and intentionally displays newest deliveries first, not strict creation-time order. Concurrent arrivals may require a refresh. A production feed needs a chosen ordering policy and privacy/retraction behavior.
+Source pattern: source slide 6, title and bullet list.
+
+25 — 04 Measure the platform
+Correctness before throughput
+Speaker notes: Students should learn how to challenge an attractive scaling claim with evidence.
+Source pattern: source slide 53, section divider.
+
+26 — Start with one author and one follower
+Follow the author
+Publish a post
+Refresh the personal feed
+Inspect the queues
+Speaker notes: Run docker compose -f compose.week5.yml up -d --build. Open Swagger at localhost:5155/swagger and RabbitMQ at localhost:15675. Set the frontend API URL to http://localhost:5155/api. Keep one author ID across posts. Authentication is outside this course slice; IDs remain test identities.
+Source pattern: source slide 6, title and bullet list.
+
+27 — Stop the workers, keep publishing
+The post API still commits
+Ready messages accumulate
+Restart workers and drain the backlog
+Speaker notes: Stop only service worker, leaving planner active. Accepted posts are converted into delivery batches while no delivery worker consumes them. The database confirms zero new feed entries until workers restart. Queue length is evidence of buffered work, not evidence of completed work.
+Source pattern: source slide 6, title and bullet list.
+
+28 — One million feed references
+10,000 followers × 100 posts
+2,000 delivery batches
+Compare 1 worker and 4 workers
+Speaker notes: Run scripts/week5/load.mjs with --followers=10000 --posts=100 and --workers=1, then repeat with --workers=4. Each run uses a fresh author. The script waits for all expected batches before starting workers, then verifies persisted feed references. It writes raw JSON evidence under docs/week5/results. This is a local backlog-drain experiment, not a production capacity guarantee.
+Source pattern: source slide 6, title and bullet list.
+
+29 — Measure two different completion times
+HTTP p50/p95: how fast was the post accepted?
+Drain time: when were all feeds updated?
+References/second: how much delivery work completed?
+Speaker notes: Acceptance is measured with delivery stopped. Drain time includes worker startup and polling, so do not present it as pure SQL throughput. Record worker concurrency, hardware and resource limits. There is no measured synchronous baseline in this experiment. Repeat in alternating order and compare variation instead of relying on one run.
+Source pattern: source slide 9, questions.
+
+30 — A growing queue is a capacity signal
+Arrival rate above processing rate → backlog
+Ready + unacknowledged = outstanding broker work
+Watch database I/O, CPU and connections too
+Speaker notes: A queue absorbs bursts but does not remove sustained overload. A useful approximation is backlog growth rate = incoming work rate minus completed work rate. Scale only after identifying the bottleneck. Also monitor oldest outbox age, error queues and end-to-end lag. The classroom count endpoint is diagnostic and becomes expensive as data grows.
+Source pattern: source slide 6, title and bullet list.
+
+31 — Prove recovery, not just a happy path
+Replay a batch with a new message ID
+Restart API while RabbitMQ is down
+Terminate workers during distribution
+Send an invalid command
+Speaker notes: Run node scripts/week5/verify.mjs. It checks idempotency independently of transport deduplication, durable publication across process restart, eventual completion after abrupt worker termination, and error-queue isolation. A crash at an exact instruction boundary requires additional deterministic fault injection; this integration run is a real restart test, not exhaustive failure-state exploration.
+Source pattern: source slide 32, testing claims.
+
+32 — Local durability is not high availability
+One broker node
+One PostgreSQL instance
+Persistent volumes; no disk-loss guarantee
+Speaker notes: We configure quorum queues, but a single local broker cannot form a fault-tolerant multi-node majority. Production needs replicated brokers, database HA/backups, resource limits, monitoring and tested recovery. Docker restart demonstrations must not be sold as proof of datacenter resilience.
+Sources: https://www.rabbitmq.com/docs/quorum-queues
+Source pattern: source slide 6, title and bullet list.
+
+33 — What happens at celebrity scale?
+Fan-out cost grows with follower count
+Millions of references per post may be too expensive
+Consider a hybrid feed
+Speaker notes: Explain the trade-off between precomputing feeds for ordinary authors and merging high-fan-out authors when reading. There is no universal follower threshold; measure read/write ratios, storage and latency targets. This extension is intentionally not implemented. Also discuss retention, unfollow, deletion and privacy changes before production use.
+Source pattern: source slide 9, questions.
+
+34 — Where do likes belong?
+Save the user's like consistently
+Publish PostLiked after the commit
+Update notifications and analytics asynchronously
+Speaker notes: A unique user/post like relationship should be enforced where the like is saved. Queues are useful for its secondary work, such as notifications or trending calculations. Ask students whether counters can be eventually consistent and how an unlike would affect ordering and deduplication. No like feature is claimed in this implementation.
+Source pattern: source slide 6, title and bullet list.
+
+35 — Your engineering challenge
+Add a second PostCreatedV1 subscriber
+Give it its own durable queue
+Prove it can fail without losing feed delivery
+Speaker notes: An independent notification or analytics subscriber makes publish/subscribe tangible. Students must state its consistency requirement, idempotency key, retry policy, privacy constraints and observability. They should explain why it needs its own queue rather than sharing the feed-delivery queue.
+Source pattern: source slide 8, mission.
+
+36 — What can we now explain?
+Which rules are immediate?
+Which work can happen later?
+How do we recover safely?
+What did the measurements actually prove?
+Speaker notes: Return to the opening user story. The post is saved with durable intent; bounded workers distribute references; duplicate deliveries do not multiply the effect. Scaling is a measured property with bottlenecks and operational costs. Ask students to trace the implementation across Domain, Application, Contracts and Infrastructure without moving business logic into a RabbitMQ consumer.
+Source pattern: source slide 9, closing questions.
+
+Measured-results insert — place after slide 29
+One million feed references, verified
+1 worker: 30.65 s / 32,629 references per second
+4 workers: 23.54 s / 42,476 references per second
+Observed throughput: 1.30×, not 4×
+Speaker notes: These are measured local results from 28 September 2026. Each configuration ran once, one-worker first, using the same growing database. Timing includes worker startup. Docker Desktop had 16 CPUs and about 15.26 GiB RAM available; PostgreSQL and RabbitMQ each ran as one node. There was no synchronous baseline and no statistical repetition. The results demonstrate one million real feed writes and an observed improvement, but do not identify the bottleneck or establish production capacity. See BENCHMARK.md and the raw JSON files for exact measurements.
+Sources: docs/week5/results/load-1workers-1790622927987.json
+Sources: docs/week5/results/load-4workers-1790623187886.json
+Source pattern: source slide 6, title and bullet list.

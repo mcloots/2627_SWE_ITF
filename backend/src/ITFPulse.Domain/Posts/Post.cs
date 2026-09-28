@@ -8,6 +8,10 @@ namespace ITFPulse.Domain.Posts
 {
     public class Post
     {
+        private readonly List<IDomainEvent> _domainEvents = [];
+        public IReadOnlyCollection<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+        public void ClearDomainEvents() => _domainEvents.Clear();
+
         public Guid Id { get; private set; }
 
         public PostContent PostContent { get; private set; }
@@ -63,11 +67,13 @@ namespace ITFPulse.Domain.Posts
             if (authorId == Guid.Empty)
                 throw new ArgumentException("An author is required.");
 
-            return new Post(
+            var post = new Post(
                 Guid.NewGuid(),
                 authorId,
                 new PostContent(content),
                 new CreatedAt(createdAt));
+            post._domainEvents.Add(new PostCreated(Guid.NewGuid(), post.Id, authorId, createdAt));
+            return post;
         }
 
         public void Edit(string newContent)

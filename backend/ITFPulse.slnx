@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="src/ITFPulse.Api/ITFPulse.Api.csproj" Id="b1c14984-b468-4652-aa8a-0ba5b4700456" />
+  <Project Path="src/ITFPulse.Worker/ITFPulse.Worker.csproj" />
   <Project Path="src/ITFPulse.Application/ITFPulse.Application.csproj" Id="fd774f6f-5407-4ff4-84f9-c12c9496cf51" />
   <Project Path="src/ITFPulse.Contracts/ITFPulse.Contracts.csproj" Id="178ca364-a1b3-487b-b7e8-bd3cb468026f" />
   <Project Path="src/ITFPulse.Domain/ITFPulse.Domain.csproj" Id="10aaaee9-c3b5-49a1-8e0f-5a727f4c8acf" />

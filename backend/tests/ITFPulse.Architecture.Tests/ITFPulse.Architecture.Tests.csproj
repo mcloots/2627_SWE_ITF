@@ -17,5 +17,8 @@
   <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/ITFPulse.Application/ITFPulse.Application.csproj" />
+  </ItemGroup>
 
 </Project>

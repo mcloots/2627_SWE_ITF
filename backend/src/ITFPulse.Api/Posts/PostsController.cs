@@ -25,6 +25,11 @@ namespace ITFPulse.Api.Posts
             CreatePostRequest request,
             CancellationToken cancellationToken)
         {
+            if (request.AuthorId == Guid.Empty || string.IsNullOrWhiteSpace(request.Content))
+                return BadRequest(new ValidationProblemDetails(new Dictionary<string, string[]>
+                {
+                    ["post"] = ["A non-empty author ID and post content are required."]
+                }));
             var command = new CreatePostCommand(
                 request.AuthorId,
                 request.Content);
