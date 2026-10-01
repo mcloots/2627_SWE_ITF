@@ -72,6 +72,7 @@ namespace ITFPulse.Domain.Posts
                 authorId,
                 new PostContent(content),
                 new CreatedAt(createdAt));
+            // Record an in-memory business fact only; persistence maps it to a durable integration event.
             post._domainEvents.Add(new PostCreated(Guid.NewGuid(), post.Id, authorId, createdAt));
             return post;
         }

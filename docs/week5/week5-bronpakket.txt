@@ -1,0 +1,1201 @@
+ITF Pulse — Week 5 source bundle. Repository excerpts read on 2026-09-29.
+Design reference is Week03_Angular_Frontend.pptx. Ignore old Week02 Source pattern references in the manuscript.
+
+========== SOURCE FILE: docs/week5/lesson-manuscript.txt ==========
+
+Week 5 — Messaging, queues and events
+English teaching manuscript
+Visual reference: Week02_VerticalSlice.pptx (54 source slides)
+Audience: Software Engineering students continuing the ITF Pulse vertical slice.
+
+01 — Messaging, queues and events
+Week 5 — Software Engineering
+Speaker notes: Today we extend the Week 2 post-creation slice into an asynchronous feed-distribution pipeline. Students should be able to explain where consistency is required, where delay is acceptable, and how to measure the result.
+Source pattern: source slide 1, title and subtitle.
+
+02 — Our mission
+As an author, I want to publish a post without waiting for every follower's feed to update.
+Speaker notes: Keep the language close to the earlier user story. The user wants a saved post; followers need eventual delivery. These are connected responsibilities with different completion times. Show the existing CreatePostHandler before introducing messaging.
+Source pattern: source slide 8, user story.
+
+03 — One post creates much more work
+100 posts
+10,000 followers per author
+1,000,000 feed references
+Speaker notes: These are workload dimensions, not measured throughput. Multiplication exposes write amplification: 100 × 10,000 = 1,000,000. With 500 followers per command, delivery needs 2,000 batch commands rather than one million individual commands.
+Source pattern: source slide 6, title and bullet list.
+
+04 — What must happen before we respond?
+Validate the post
+Save the post
+Record durable publication intent
+Distribute to followers afterwards
+Speaker notes: Ask which operations must complete before returning 201. Domain invariants and persistence are immediate. Fan-out can be asynchronous. The frontend must say saved, with delivery following shortly; it must not promise completed distribution.
+Source pattern: source slide 10, rules and question.
+
+05 — 01 Events and responsibilities
+Connect messaging to the domain
+Speaker notes: Start with business language rather than RabbitMQ APIs.
+Source pattern: source slide 5, section divider.
+
+06 — An event states a fact
+PostCreated
+Something has already happened
+It does not name the next consumer
+Speaker notes: The Post aggregate records a domain event only after the factory has validated the author, content and creation time. It never opens a connection to a broker. Domain/Posts/PostCreated.cs contains immutable identifiers and time; Post.DomainEvents is ignored by EF mapping.
+Source pattern: source slide 11, title and body.
+
+07 — A command asks for work
+PlanPostFanoutV1
+DeliverPostToFollowersV1
+One logical owner for each command
+Speaker notes: Commands have imperative names and target known queues. Multiple replicas of that owner compete for messages. Contrast this with publishing PostCreatedV1 to an exchange, where independent subscribers can each obtain a copy.
+Source pattern: source slide 17, use-case names and explanation.
+
+08 — Domain and integration events differ
+PostCreated belongs to the model
+PostCreatedV1 crosses a process boundary
+Translate explicitly before committing
+Speaker notes: Domain events can evolve with the model. Integration contracts need a compatibility policy. Never serialize an EF aggregate or its navigation graph. PostRepository translates the event into the V1 contract, preserving EventId as the transport message ID. Unknown domain event types fail loudly. Contracts has no broker dependency.
+Source pattern: source slide 6, title and bullet list.
+
+09 — The dependency rule still holds
+Domain: business facts and invariants
+Application: planning and delivery use cases
+Infrastructure: SQL, RabbitMQ and reliability
+Speaker notes: Application defines IFeedStore and IFeedWorkQueue. Infrastructure implements them and wraps the handlers in consumers. API and Worker are composition roots. Architecture tests check that Domain, Application and Contracts cannot reference MassTransit, RabbitMQ, EF Core or Npgsql. The worker process is outside the inner layers.
+Source pattern: source slide 18, architecture labels and responsibilities.
+
+10 — Follow relationships stay outside Post
+A post remains a small aggregate
+Followers belong to a separate relationship
+A feed is a query model
+Speaker notes: Putting thousands of followers or feed entries inside the Post aggregate would make every post load and save much larger. Follow.Create enforces valid identities and prevents self-follow. A feed entry references the source post; it is not another Post aggregate. Our shared database makes this an evolving modular application, not fully independent microservices.
+Source pattern: source slide 6, title and bullet list.
+
+11 — 02 Reliable publication
+Bridge the database and the broker
+Speaker notes: Introduce the dual-write problem before naming the pattern.
+Source pattern: source slide 34, section divider.
+
+12 — Two writes leave a failure window
+Save post, then publish
+What if the process stops between them?
+Publish, then save
+What if the database rejects the post?
+Speaker notes: Neither order makes two independent systems atomic. A try/catch cannot undo a message already consumed. Publishing inside a database transaction does not include RabbitMQ in that transaction. We need durable intent inside the same database commit.
+Source pattern: source slide 9, questions.
+
+13 — Commit the post and its outbox together
+One PostgreSQL transaction
+Post row + serialized message
+Return 201 after that commit
+Speaker notes: In PostRepository, scoped IPublishEndpoint is replaced by the MassTransit EF bus outbox. Publish adds the message to the scoped context. SaveChanges commits both records. Do not replace it with IBus.Publish, which bypasses this request outbox. Domain events are cleared only after successful persistence.
+Sources: https://masstransit.io/documentation/configuration/middleware/outbox
+Source pattern: source slide 6, title and bullet list.
+
+14 — Broker delivery can happen later
+Read committed outbox work
+Publish with transport confirmation
+Retry when the broker recovers
+Speaker notes: The outbox delivery service operates independently of the HTTP request. The verification stops RabbitMQ, creates a post, restarts the API and checks that the missing feed work is recovered. A crash after publication but before marking delivery complete can repeat a message. The outbox therefore solves lost intent, not duplicate delivery.
+Sources: https://masstransit.io/documentation/patterns/transactional-outbox
+Sources: https://www.rabbitmq.com/docs/confirms
+Source pattern: source slide 6, title and bullet list.
+
+15 — Create the subscription before publishing
+Declare exchanges, queues and bindings
+Apply database migrations once
+Start API and worker replicas afterwards
+Speaker notes: A durable publisher confirmation does not mean a future subscriber will receive history. The --initialize process deploys topology before the API begins publishing. Compose waits for successful initialization. Durable queues keep work while consumers are offline; queues that do not yet exist cannot keep it. Never run schema migrations independently in every worker replica.
+Sources: https://masstransit.io/documentation/configuration/transports/rabbitmq
+Source pattern: source slide 6, title and bullet list.
+
+16 — 03 Distribute the work
+A bounded fan-out pipeline
+Speaker notes: Connect the earlier event/command distinction to real queues.
+Source pattern: source slide 41, section divider.
+
+17 — Plan pages; deliver batches
+PostCreatedV1 → initial planning command
+Planner → 500 follower IDs per batch
+Delivery workers → parallel database writes
+Speaker notes: Trace one post through the three queues in RabbitMQ. The planner emits a delivery command and a continuation. Delivery commands from the same post can execute in parallel. A single all-followers task would retry too much work; one task per follower would add excessive messaging overhead.
+Source pattern: source slide 6, title and bullet list.
+
+18 — Page through followers with a cursor
+Filter by author and creation-time cutoff
+Read IDs after the last processed ID
+Order by ID; take at most 500
+Speaker notes: Show FeedStore.GetFollowersAsync. The composite author/id index supports keyset pagination. We avoid increasingly expensive offsets and unbounded ToList calls. FollowedAt is compared with post CreatedAt, so later follows do not receive older posts. Concurrent commits and cross-host clock skew still mean this is not a globally atomic historical snapshot. The fixture completes all follows first.
+Source pattern: source slide 6, title and bullet list.
+
+19 — Do not lose the next page
+Send the delivery batch
+Send the continuation
+Commit both through the consumer outbox
+Speaker notes: If a planner page acknowledges before its next command is durable, the rest of the audience could be skipped. The EF consumer outbox coordinates the inbox and outgoing commands. The continuation advances to the last follower ID. A full final page may produce one empty continuation; it safely terminates without delivery.
+Sources: https://masstransit.io/documentation/configuration/middleware/outbox
+Source pattern: source slide 6, title and bullet list.
+
+20 — Write references in one database operation
+INSERT ... SELECT FROM unnest(...)
+ON CONFLICT DO NOTHING
+Keep the full post body in one place
+Speaker notes: Open FeedStore.DeliverAsync. A typed UUID array is sent as a parameter, never concatenated into SQL. Each worker issues one set-based insert for up to 500 followers. The feed joins the source post on read. Batch size bounds memory, SQL work and the cost of repeating a delivery.
+Sources: https://www.postgresql.org/docs/17/sql-insert.html
+Source pattern: source slide 6, title and bullet list.
+
+21 — Duplicate delivery must be harmless
+Unique key: follower ID + post ID
+Replayed batch: zero duplicate entries
+Message ID is not the business invariant
+Speaker notes: Transport inbox deduplication has a one-hour retention window in this example. The unique feed key protects the effect even after that window, or when someone republishes the same logical batch with a different message ID. verify.mjs deliberately sends new IDs to exercise this. Do not claim end-to-end exactly-once delivery.
+Sources: https://www.rabbitmq.com/docs/confirms
+Sources: https://www.postgresql.org/docs/17/sql-insert.html
+Source pattern: source slide 10, invariants.
+
+22 — Retries need an end
+Brief transient failure → bounded retry
+Invalid command → no retry
+Exhausted failure → inspectable error queue
+Speaker notes: There are three short retries: 100 ms, 500 ms and 1 s. ArgumentException is excluded. An invalid delivery ends up in itfpulse-deliver-feed-v1_error. Show exception headers and discuss diagnosis before replay. Long outages require delayed redelivery or operational recovery rather than occupying every consumer slot with long in-memory retries.
+Sources: https://masstransit.io/documentation/concepts/exceptions
+Source pattern: source slide 6, title and bullet list.
+
+23 — Concurrency is a budget
+8 concurrent messages per delivery worker
+16 prefetched messages per worker
+More replicas share the same queue
+Speaker notes: Prefetch bounds unacknowledged deliveries and helps keep consumers busy; it does not set the number of database writes by itself. Worker concurrency limits active processing. Four workers can attempt more simultaneous batches, but still share PostgreSQL and RabbitMQ. More connections and contention can reduce throughput.
+Sources: https://www.rabbitmq.com/docs/confirms
+Source pattern: source slide 6, title and bullet list.
+
+24 — The feed is eventually consistent
+Saved does not mean delivered everywhere
+Batches can complete out of order
+Refresh to see new arrivals
+Speaker notes: Walk through the UI. It shows a saved post and makes no completion promise. Feed pagination uses a delivery sequence and intentionally displays newest deliveries first, not strict creation-time order. Concurrent arrivals may require a refresh. A production feed needs a chosen ordering policy and privacy/retraction behavior.
+Source pattern: source slide 6, title and bullet list.
+
+25 — 04 Measure the platform
+Correctness before throughput
+Speaker notes: Students should learn how to challenge an attractive scaling claim with evidence.
+Source pattern: source slide 53, section divider.
+
+26 — Start with one author and one follower
+Follow the author
+Publish a post
+Refresh the personal feed
+Inspect the queues
+Speaker notes: Run docker compose -f compose.week5.yml up -d --build. Open Swagger at localhost:5155/swagger and RabbitMQ at localhost:15675. Set the frontend API URL to http://localhost:5155/api. Keep one author ID across posts. Authentication is outside this course slice; IDs remain test identities.
+Source pattern: source slide 6, title and bullet list.
+
+27 — Stop the workers, keep publishing
+The post API still commits
+Ready messages accumulate
+Restart workers and drain the backlog
+Speaker notes: Stop only service worker, leaving planner active. Accepted posts are converted into delivery batches while no delivery worker consumes them. The database confirms zero new feed entries until workers restart. Queue length is evidence of buffered work, not evidence of completed work.
+Source pattern: source slide 6, title and bullet list.
+
+28 — One million feed references
+10,000 followers × 100 posts
+2,000 delivery batches
+Compare 1 worker and 4 workers
+Speaker notes: Run scripts/week5/load.mjs with --followers=10000 --posts=100 and --workers=1, then repeat with --workers=4. Each run uses a fresh author. The script waits for all expected batches before starting workers, then verifies persisted feed references. It writes raw JSON evidence under docs/week5/results. This is a local backlog-drain experiment, not a production capacity guarantee.
+Source pattern: source slide 6, title and bullet list.
+
+29 — Measure two different completion times
+HTTP p50/p95: how fast was the post accepted?
+Drain time: when were all feeds updated?
+References/second: how much delivery work completed?
+Speaker notes: Acceptance is measured with delivery stopped. Drain time includes worker startup and polling, so do not present it as pure SQL throughput. Record worker concurrency, hardware and resource limits. There is no measured synchronous baseline in this experiment. Repeat in alternating order and compare variation instead of relying on one run.
+Source pattern: source slide 9, questions.
+
+30 — A growing queue is a capacity signal
+Arrival rate above processing rate → backlog
+Ready + unacknowledged = outstanding broker work
+Watch database I/O, CPU and connections too
+Speaker notes: A queue absorbs bursts but does not remove sustained overload. A useful approximation is backlog growth rate = incoming work rate minus completed work rate. Scale only after identifying the bottleneck. Also monitor oldest outbox age, error queues and end-to-end lag. The classroom count endpoint is diagnostic and becomes expensive as data grows.
+Source pattern: source slide 6, title and bullet list.
+
+31 — Prove recovery, not just a happy path
+Replay a batch with a new message ID
+Restart API while RabbitMQ is down
+Terminate workers during distribution
+Send an invalid command
+Speaker notes: Run node scripts/week5/verify.mjs. It checks idempotency independently of transport deduplication, durable publication across process restart, eventual completion after abrupt worker termination, and error-queue isolation. A crash at an exact instruction boundary requires additional deterministic fault injection; this integration run is a real restart test, not exhaustive failure-state exploration.
+Source pattern: source slide 32, testing claims.
+
+32 — Local durability is not high availability
+One broker node
+One PostgreSQL instance
+Persistent volumes; no disk-loss guarantee
+Speaker notes: We configure quorum queues, but a single local broker cannot form a fault-tolerant multi-node majority. Production needs replicated brokers, database HA/backups, resource limits, monitoring and tested recovery. Docker restart demonstrations must not be sold as proof of datacenter resilience.
+Sources: https://www.rabbitmq.com/docs/quorum-queues
+Source pattern: source slide 6, title and bullet list.
+
+33 — What happens at celebrity scale?
+Fan-out cost grows with follower count
+Millions of references per post may be too expensive
+Consider a hybrid feed
+Speaker notes: Explain the trade-off between precomputing feeds for ordinary authors and merging high-fan-out authors when reading. There is no universal follower threshold; measure read/write ratios, storage and latency targets. This extension is intentionally not implemented. Also discuss retention, unfollow, deletion and privacy changes before production use.
+Source pattern: source slide 9, questions.
+
+34 — Where do likes belong?
+Save the user's like consistently
+Publish PostLiked after the commit
+Update notifications and analytics asynchronously
+Speaker notes: A unique user/post like relationship should be enforced where the like is saved. Queues are useful for its secondary work, such as notifications or trending calculations. Ask students whether counters can be eventually consistent and how an unlike would affect ordering and deduplication. No like feature is claimed in this implementation.
+Source pattern: source slide 6, title and bullet list.
+
+35 — Your engineering challenge
+Add a second PostCreatedV1 subscriber
+Give it its own durable queue
+Prove it can fail without losing feed delivery
+Speaker notes: An independent notification or analytics subscriber makes publish/subscribe tangible. Students must state its consistency requirement, idempotency key, retry policy, privacy constraints and observability. They should explain why it needs its own queue rather than sharing the feed-delivery queue.
+Source pattern: source slide 8, mission.
+
+36 — What can we now explain?
+Which rules are immediate?
+Which work can happen later?
+How do we recover safely?
+What did the measurements actually prove?
+Speaker notes: Return to the opening user story. The post is saved with durable intent; bounded workers distribute references; duplicate deliveries do not multiply the effect. Scaling is a measured property with bottlenecks and operational costs. Ask students to trace the implementation across Domain, Application, Contracts and Infrastructure without moving business logic into a RabbitMQ consumer.
+Source pattern: source slide 9, closing questions.
+
+Measured-results insert — place after slide 29
+One million feed references, verified
+1 worker: 30.65 s / 32,629 references per second
+4 workers: 23.54 s / 42,476 references per second
+Observed throughput: 1.30×, not 4×
+Speaker notes: These are measured local results from 28 September 2026. Each configuration ran once, one-worker first, using the same growing database. Timing includes worker startup. Docker Desktop had 16 CPUs and about 15.26 GiB RAM available; PostgreSQL and RabbitMQ each ran as one node. There was no synchronous baseline and no statistical repetition. The results demonstrate one million real feed writes and an observed improvement, but do not identify the bottleneck or establish production capacity. See BENCHMARK.md and the raw JSON files for exact measurements.
+Sources: docs/week5/results/load-1workers-1790622927987.json
+Sources: docs/week5/results/load-4workers-1790623187886.json
+Source pattern: source slide 6, title and bullet list.
+
+
+========== SOURCE FILE: docs/week5/README.md ==========
+
+# Week 5 — Messaging, queues and events
+
+**Use case:** an author publishes a post; hundreds or thousands of followers receive a reference to it in their personal feeds. Publishing must not wait for every feed write.
+
+## Run the complete demo
+
+Requirements: Docker Desktop with Linux containers, Node.js 22+, and available local ports 5155, 5545, 5675 and 15675. The demo uses its own Compose project and persistent volumes; it does not use the existing API `.env` database.
+
+From the repository root:
+
+```powershell
+docker compose -f compose.week5.yml up -d --build
+docker compose -f compose.week5.yml logs initialize
+```
+
+The one-shot initializer applies EF migrations and declares all exchanges, queues and bindings **before** the API starts. This is essential: publishing an event before a subscription exists can otherwise lose that subscriber's copy. Initializer success is a deployment prerequisite, not a check performed on every request.
+
+- API and Swagger: <http://localhost:5155/swagger>
+- RabbitMQ management: <http://localhost:15675> — `pulse` / `local-pulse-demo`
+- PostgreSQL: localhost:5545, database/user `pulse`, password `local-pulse-demo`
+- The demo binds published ports to loopback. Credentials are intentionally local demo values.
+
+To run Angular against this stack, set `NG_APP_API_BASE_URL=http://localhost:5155/api` in your frontend environment, then run `npm start` from `frontend`. The normal app's environment file is not overwritten by this demo.
+
+1. Open **Create Post** and copy the test author ID.
+2. In another tab, open **Your feed**, paste the author ID and click **Follow author**.
+3. Publish a post in the first tab.
+4. Refresh the follower's feed. The post appears after asynchronous delivery.
+5. Stop delivery workers, publish again, and show that the API still responds. Restart workers and refresh the feed.
+
+```powershell
+docker compose -f compose.week5.yml stop worker
+docker compose -f compose.week5.yml start worker
+```
+
+The test author stays the same across posts. Test IDs are manually selectable because authentication has not yet been introduced in this course repository. Production authorization must derive the acting user from their identity rather than trust a supplied UUID.
+
+## Follow the code
+
+```text
+HTTP POST /api/posts
+  CreatePostHandler -> Post.Create -> PostCreated (domain event)
+  PostRepository -> PostCreatedV1 (integration event)
+  SaveChanges: post + bus outbox, one database transaction
+  outbox delivery service -> RabbitMQ PostCreatedV1 exchange
+  itfpulse-post-created-v1 -> PostCreatedConsumer
+  itfpulse-plan-fanout-v1 -> PlanPostFanoutHandler
+    read <=500 followers using an indexed cursor
+    atomically enqueue delivery batch + next planner page
+  itfpulse-deliver-feed-v1 -> DeliverPostToFollowersHandler
+    insert <=500 feed references in one SQL statement
+HTTP GET /api/feeds/{followerId}
+  indexed feed references joined to the original posts
+```
+
+| Responsibility | Location | Why it belongs here |
+|---|---|---|
+| Post rules and `PostCreated` fact | Domain/Posts | Business behavior without broker or persistence dependencies |
+| Follow invariants | Domain/Followers | Reject empty identities and following yourself |
+| Plan/deliver use cases and ports | Application/Feeds | Express bounded work without choosing RabbitMQ or SQL |
+| Versioned messages | Contracts/Messaging | Explicit process boundary; never serialize a tracked aggregate |
+| RabbitMQ consumers, retries and outboxes | Infrastructure/Messaging | Transport is an adapter around application use cases |
+| Set-based writes and indexed reads | Infrastructure/Persistence | Database-specific performance decisions stay outside the domain |
+| HTTP and process composition | Api and Worker | Independently deployable entry points, sharing the inner layers |
+
+This is an evolving modular application with separate worker processes, **not** independently owned microservices: the processes still share a database and deployment-compatible contracts.
+
+## Why these decisions?
+
+**A queue for fan-out, not for the core post validation.** Creating the post is a short, strongly consistent operation. Distributing it is much larger, delay-tolerant work. A `201` response means the post and its durable publication intent committed; it does not promise that every feed is already updated.
+
+**Domain event versus integration event.** `PostCreated` is a fact recorded by the aggregate. `PostCreatedV1` is a small, versioned message published outside the request. The repository adapter explicitly translates the event before saving. It throws for unknown event types instead of silently dropping them. `ClearDomainEvents` runs only after a successful save. For larger aggregates/use cases, move the same mapping/commit boundary to a dedicated unit of work.
+
+**Transactional outbox instead of a database write followed by a broker publish.** Those two independent writes cannot be made atomic by placing them next to each other. The EF bus outbox persists the post and the message in one transaction, then retries transport delivery separately. We use the scoped `IPublishEndpoint`, never a direct `IBus.Publish` in the request.
+
+**Two kinds of messages.** Publish `PostCreatedV1`, a past-tense fact that may have multiple subscriptions. Send `PlanPostFanoutV1` and `DeliverPostToFollowersV1`, commands owned by one queue. Four delivery workers share one queue and divide work; four different subscriber queues would each receive their own copy.
+
+**Two worker stages.** The planner scans the follower relationship in pages and emits compact batches. Delivery workers process batches independently, including different batches of the same post. One message per follower would add unnecessary serialization, broker and inbox overhead; one message containing all followers would create unbounded payloads and expensive retries. The fixed 500-person batch is a tunable starting point, not a universal optimum.
+
+**Atomic continuation.** Every planner page sends its delivery batch and, when needed, its next-page command through the EF consumer outbox. The transaction and inbox prevent an acknowledged page from losing its continuation. An empty final page for an exact multiple of 500 is harmless.
+
+**Idempotent effects.** RabbitMQ delivery and crash recovery can repeat a message. The consumer inbox suppresses repeated transport message IDs within its retention window. Independently, the `(follower_id, post_id)` database key and `ON CONFLICT DO NOTHING` protect the business effect permanently while that feed reference exists, including duplicates with a new message ID. This is not an end-to-end exactly-once delivery claim.
+
+**Efficient storage.** Each batch uses parameterized `INSERT ... SELECT FROM unnest(...)`; it does not load and track 500 EF entities. Feed rows contain post references, not copies of the 2,000-character body. Author/cursor and follower/cursor indexes support bounded reads. Database connections are pooled. The post table remains the source of truth.
+
+**Bounded concurrency.** Default delivery concurrency is 8 and prefetch is 16 per process. These are explicit bounds, not a `Task.WhenAll` over every follower. More workers increase potential concurrency and database connections; they do not create unlimited I/O capacity. Tune with measurements. Sustained incoming work above delivery capacity grows the backlog and eventually consumes disk; queues buy time rather than remove capacity limits.
+
+**Retries and error queues.** Three short retry intervals (100 ms, 500 ms, 1 s) handle brief failures. Invalid commands are not retried. After retries are exhausted, MassTransit moves failed messages to the queue's `_error` queue with exception metadata. Investigate and fix the cause before a controlled replay. Long outages should use delayed redelivery/circuit breaking and operational intervention; do not keep increasing immediate retries.
+
+**RabbitMQ and MassTransit.** RabbitMQ fits competing work consumers and visible classroom operations. MassTransit supplies transport confirmations, lifecycle, retry/error handling and transactional outbox/inbox plumbing; implementing those correctly by hand would obscure the lesson. This example pins MassTransit 8.5.7 rather than silently moving to a different major version. Review support and licensing before a production adoption or upgrade. Kafka would be an alternative when retained event logs, replay and partitioned stream processing are primary requirements; it is not needed to demonstrate this work queue.
+
+**Durability is not the same as high availability.** Quorum queues and persistent Docker volumes are configured. The local demo has only one broker node and one database. It demonstrates process restart recovery, not survival of disk loss or broker-node failure. A production deployment needs multiple broker nodes, database HA/backups, observability and tested recovery procedures.
+
+## Delivery semantics and scope
+
+- Feed delivery is eventually consistent. Different posts/batches may complete out of order.
+- The UI intentionally orders by **delivery sequence**, not original post creation time. `createdAt` still shows the post's original time. A cursor gives efficient paging; concurrent commits can require a refresh to see newly arriving items.
+- The planner includes relationships visible when each page is read whose `FollowedAt <= CreatedAt`. New follows do not backfill old posts. This is **not** a globally atomic historical snapshot: an in-flight follow transaction or clock skew across hosts can affect inclusion. The load fixture completes all follows before posting. Strict publish-time membership would need a versioned relationship/snapshot policy or stronger coordination.
+- Unfollow, account deletion, moderation, privacy changes and feed retention are separate use cases. They need delivery-time authorization/retraction rules before this becomes a production social network.
+- Consumer inbox cleanup is configured for one hour. Outbox rows are removed by delivery after success. Feed data has no automatic retention yet; introduce retention/partitioning as volume grows.
+- HTTP retries are different from message retries. Retrying a `POST` after an ambiguous client timeout can create another post; a client idempotency key is a separate feature.
+- At celebrity scale, writing to millions of feeds per post can cost too much. A hybrid feed can precompute ordinary authors and merge high-fan-out authors on read. That is an extension, not implemented here.
+
+## Reproducible volume demonstration
+
+See [the measured results and their limitations](BENCHMARK.md): both one-million-entry runs completed, with 30.65 s drain time for one worker and 23.54 s for four workers.
+
+```powershell
+node scripts/week5/load.mjs --followers=10000 --posts=100 --workers=1
+node scripts/week5/load.mjs --followers=10000 --posts=100 --workers=4
+```
+
+Each run creates a new author through the real follow/post API, stops delivery workers, accepts 100 posts, waits for 2,000 queued delivery batches, then starts the selected worker count and verifies **1,000,000 unique feed references** for that author. The script also checks a sample feed and waits for queues to drain without error/skipped messages. Results are written to `docs/week5/results/`.
+
+Measurements include HTTP p50/p95 latency, accepted posts/second, total drain time and delivered references/second. Drain timing includes worker startup and up to 500 ms of progress polling. This is a backlog-drain experiment; HTTP latency is measured with delivery stopped. It is not a measured speedup over a synchronous implementation or a sustained-load capacity test.
+
+Repeat runs with one and four workers in alternating order. Use equal Docker CPU/memory limits, record storage type, account for database/cache growth, and compare medians and variation. More workers can be slower when the shared database or broker is the bottleneck. Never hide that result: it is part of the engineering lesson.
+
+To vary per-worker concurrency in PowerShell:
+
+```powershell
+$env:FEED_CONCURRENCY = '4'
+$env:FEED_PREFETCH = '8'
+node scripts/week5/load.mjs --followers=10000 --posts=100 --workers=4
+```
+
+Observe `messages_ready`, `messages_unacknowledged`, consumer count and delivery/ack rates in RabbitMQ, alongside `docker stats`. Ready messages show queued work; unacknowledged messages are in flight. Both matter. The development-only `/api/demo/fanout/{authorId}` endpoint counts persisted results. Counting grows more expensive with data volume and is for this lesson, not a production monitoring design.
+
+## Verify correctness and failure recovery
+
+```powershell
+dotnet build backend/ITFPulse.slnx -m:1
+dotnet run --no-build --project backend/tests/ITFPulse.Domain.Tests
+dotnet run --no-build --project backend/tests/ITFPulse.Application.Tests
+dotnet test backend/tests/ITFPulse.Architecture.Tests
+node scripts/week5/verify.mjs
+```
+
+The existing repository mixes xUnit v3 executable runners and xUnit v2/VSTest. Use the commands above; a single `dotnet test` over the solution is not compatible with that mixed setup on the current .NET 10 SDK.
+
+The integration script verifies three-page fan-out (1,001 followers), duplicate follow requests, database idempotency with new transport IDs, read/pagination, broker outage plus API restart, delivery-worker termination/restart, and poison-message isolation. It stops/restarts only this Compose project's services. It consumes its one deliberate poison message after checking it. Run tests and load demonstrations sequentially.
+
+Stop the demo without deleting its data:
+
+```powershell
+docker compose -f compose.week5.yml down
+```
+
+## Sources for the lesson
+
+- [MassTransit transactional outbox](https://masstransit.io/documentation/patterns/transactional-outbox)
+- [MassTransit outbox configuration](https://masstransit.io/documentation/configuration/middleware/outbox)
+- [MassTransit RabbitMQ configuration](https://masstransit.io/documentation/configuration/transports/rabbitmq)
+- [MassTransit exception/retry handling](https://masstransit.io/documentation/concepts/exceptions)
+- [RabbitMQ acknowledgements and publisher confirms](https://www.rabbitmq.com/docs/confirms)
+- [RabbitMQ quorum queues](https://www.rabbitmq.com/docs/quorum-queues)
+- [PostgreSQL INSERT / ON CONFLICT](https://www.postgresql.org/docs/17/sql-insert.html)
+- [MassTransit 8.5.7 package](https://www.nuget.org/packages/MassTransit.EntityFrameworkCore/8.5.7)
+
+Current online MassTransit documentation also describes newer major versions. The compiled implementation and integration tests are the reference for the pinned version used in this repository.
+
+
+========== SOURCE FILE: docs/week5/BENCHMARK.md ==========
+
+# Measured fan-out results — 28 September 2026
+
+Both runs used the actual HTTP API, PostgreSQL, RabbitMQ and containerized workers. Each run seeded a new author with 10,000 followers, published 100 posts and verified 1,000,000 persisted feed references. Delivery was stopped during publication, then started after all 2,000 delivery batches were queued.
+
+| Measurement | 1 delivery worker | 4 delivery workers |
+|---|---:|---:|
+| Verified feed references | 1,000,000 | 1,000,000 |
+| Delivery batches | 2,000 | 2,000 |
+| Drain time, including worker startup | 30.65 s | 23.54 s |
+| Feed references / second | 32,629 | 42,476 |
+| HTTP acceptance p50 | 20.67 ms | 19.11 ms |
+| HTTP acceptance p95 | 31.48 ms | 28.48 ms |
+| HTTP publish concurrency | 16 | 16 |
+| Consumer concurrency per worker | 8 | 8 |
+| Prefetch per worker | 16 | 16 |
+
+Observed drain throughput ratio: **42,476 / 32,629 = 1.30×**. Four replicas improved delivery throughput in these runs; they did not produce a fourfold improvement. The measurements alone do not identify whether storage, broker processing, database contention or startup dominated the limit. That requires profiling.
+
+HTTP figures describe acceptance with delivery workers stopped, not HTTP latency under simultaneous fan-out. The two columns' HTTP differences are not a consequence of delivery-worker count because those workers were not running during acceptance.
+
+## Environment and limitations
+
+- Windows host: AMD Ryzen 7 PRO 250, 16 logical CPUs, 31.28 GiB RAM.
+- Docker Desktop Linux engine: 16 CPUs, 16,384,679,936 bytes of available memory (about 15.26 GiB); no per-service CPU or memory limit was set.
+- One PostgreSQL 17 container and one RabbitMQ 4.1 management container, backed by persistent Docker volumes.
+- Release builds on .NET 10; MassTransit 8.5.7; a separate planner process.
+- One recorded run per configuration, one-worker first. The second run used the same database with the first run's data still present. Cache state, data growth and other host activity were not controlled.
+- Drain timing starts before launching worker containers and ends when the author-scoped database count reaches one million. It includes startup and up to 500 ms of polling delay, plus query execution time.
+- No synchronous baseline, sustained arrival-rate test, cold-disk test, repeated statistical analysis or multi-node availability test was performed.
+- These results demonstrate real backlog processing at this volume on this machine. They are not a production capacity or latency guarantee.
+
+## Raw evidence
+
+- [One worker](results/load-1workers-1790622927987.json)
+- [Four workers](results/load-4workers-1790623187886.json)
+
+Reproduce using the commands in the [Week 5 guide](README.md). Repeat in alternating order under fixed resource limits before drawing stronger scaling conclusions.
+
+## Verification completed
+
+- Full .NET solution build: no warnings or errors.
+- Domain tests: 6 passed.
+- Application tests: 8 passed.
+- Architecture tests: 4 passed.
+- Angular production build: passed.
+- Angular tests: 5 passed. The existing custom environment builder emits an Angular test-builder compatibility warning, but the tests complete successfully.
+- Integration: 1,001-follower multi-page distribution, duplicate follow, invalid input, feed reading/pagination, delivery replay with fresh message IDs, broker outage plus API restart, delivery-worker termination/restart and poison-message isolation all passed.
+- Both million-entry runs completed without queued error/skipped messages.
+
+No interactive browser session was available, so the UI was checked by build and component/HTTP tests rather than an interactive browser run.
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Domain/Posts/Post.cs ==========
+
+using ITFPulse.Domain.Common;
+using ITFPulse.Domain.Users;
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace ITFPulse.Domain.Posts
+{
+    public class Post
+    {
+        private readonly List<IDomainEvent> _domainEvents = [];
+        public IReadOnlyCollection<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+        public void ClearDomainEvents() => _domainEvents.Clear();
+
+        public Guid Id { get; private set; }
+
+        public PostContent PostContent { get; private set; }
+
+        public CreatedAt CreatedAt { get; private set; }
+
+        // User creates a post, but in domain language we talk about the Author of the post
+        public Guid AuthorId { get; private set; }
+
+        private readonly List<Comment> _comments = [];
+
+        public IReadOnlyCollection<Comment> Comments =>
+            _comments.AsReadOnly();
+
+        // private constructor needed for EF Core
+        private Post()
+        {
+            // Used only by EF Core
+            PostContent = null!;
+            CreatedAt = null!;
+        }
+
+        // A post can only be created through the Create method => Factory method
+        private Post(
+            Guid id,
+            Guid authorId,
+            PostContent postContent,
+            CreatedAt createdAt)
+        {
+            if (id == Guid.Empty)
+            {
+                throw new ArgumentException(
+                    "Post ID cannot be empty.",
+                    nameof(id));
+            }
+
+            Id = id;
+            AuthorId = authorId;
+            PostContent = postContent
+                ?? throw new ArgumentNullException(nameof(postContent));
+
+            CreatedAt = createdAt
+                ?? throw new ArgumentNullException(nameof(createdAt));
+        }
+
+        // Factory method for creating a post
+        // This reads like domain language: we are creating a new post
+        public static Post Create(
+        Guid authorId,
+        string content,
+        DateTimeOffset createdAt)
+        {
+            if (authorId == Guid.Empty)
+                throw new ArgumentException("An author is required.");
+
+            var post = new Post(
+                Guid.NewGuid(),
+                authorId,
+                new PostContent(content),
+                new CreatedAt(createdAt));
+            post._domainEvents.Add(new PostCreated(Guid.NewGuid(), post.Id, authorId, createdAt));
+            return post;
+        }
+
+        public void Edit(string newContent)
+        {
+            PostContent = new PostContent(newContent);
+        }
+
+        public void AddComment(
+            Guid commentId,
+            string content,
+            DateTimeOffset createdAt)
+        {
+            if (_comments.Any(comment => comment.Id == commentId))
+            {
+                throw new InvalidOperationException(
+                    $"Comment with ID {commentId} already exists.");
+            }
+
+            var comment = new Comment(
+                commentId,
+                new CommentContent(content),
+                new CreatedAt(createdAt));
+
+            _comments.Add(comment);
+        }
+
+        public void EditComment(Guid commentId, string newContent)
+        {
+            var comment = FindComment(commentId);
+            comment.Edit(newContent);
+        }
+
+        public void RemoveComment(Guid commentId)
+        {
+            var comment = FindComment(commentId);
+            _comments.Remove(comment);
+        }
+
+        private Comment FindComment(Guid commentId)
+        {
+            return _comments.SingleOrDefault(comment => comment.Id == commentId)
+                ?? throw new KeyNotFoundException(
+                    $"Comment with ID {commentId} was not found.");
+        }
+    }
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Domain/Posts/PostCreated.cs ==========
+
+using ITFPulse.Domain.Common;
+
+namespace ITFPulse.Domain.Posts;
+
+public sealed record PostCreated(Guid EventId, Guid PostId, Guid AuthorId,
+    DateTimeOffset OccurredAt) : IDomainEvent;
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Domain/Common/IDomainEvent.cs ==========
+
+namespace ITFPulse.Domain.Common;
+
+public interface IDomainEvent
+{
+    Guid EventId { get; }
+    DateTimeOffset OccurredAt { get; }
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Contracts/Messaging/FeedMessages.cs ==========
+
+namespace ITFPulse.Contracts.Messaging;
+
+// Public integration contract: no domain entities or transport dependencies.
+public sealed record PostCreatedV1(Guid EventId, Guid PostId, Guid AuthorId, DateTimeOffset CreatedAt);
+
+// Commands target one logical owner; multiple instances compete for its queue.
+public sealed record PlanPostFanoutV1(Guid PostId, Guid AuthorId, DateTimeOffset CreatedAt, long AfterFollowerId);
+public sealed record DeliverPostToFollowersV1(Guid PostId, DateTimeOffset CreatedAt, Guid[] FollowerIds);
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Application/Posts/CreatePosts/CreatePostHandler.cs ==========
+
+using ITFPulse.Application.Abstractions;
+using ITFPulse.Application.Abstractions.Persistence;
+using ITFPulse.Domain.Posts;
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace ITFPulse.Application.Posts.CreatePosts
+{
+    public sealed class CreatePostHandler
+    {
+        private readonly IPostRepository _postRepository;
+        private readonly IClock _clock;
+
+        public CreatePostHandler(
+            IPostRepository postRepository,
+            IClock clock)
+        {
+            _postRepository = postRepository;
+            _clock = clock;
+        }
+
+        public async Task<Guid> Handle(
+            CreatePostCommand command,
+            CancellationToken cancellationToken)
+        {
+            var post = Post.Create(
+                command.AuthorId,
+                command.Content,
+                _clock.UtcNow);
+
+            await _postRepository.AddAsync(
+                post,
+                cancellationToken);
+
+            return post.Id;
+        }
+    }
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Application/Feeds/IFeedStore.cs ==========
+
+using ITFPulse.Domain.Followers;
+
+namespace ITFPulse.Application.Feeds;
+
+public sealed record FollowerPageItem(long Id, Guid FollowerId);
+public sealed record FeedPost(long Sequence, Guid PostId, Guid AuthorId, string Content, DateTimeOffset CreatedAt);
+public sealed record FanoutProgress(long Posts, long Followers, long FeedEntries);
+
+public interface IFeedStore
+{
+    Task FollowAsync(Follow follow, CancellationToken cancellationToken);
+    Task<IReadOnlyList<FollowerPageItem>> GetFollowersAsync(Guid authorId, DateTimeOffset cutoff,
+        long afterId, int limit, CancellationToken cancellationToken);
+    Task DeliverAsync(Guid postId, DateTimeOffset createdAt, Guid[] followerIds, CancellationToken cancellationToken);
+    Task<IReadOnlyList<FeedPost>> ReadAsync(Guid followerId, long? beforeSequence, int limit, CancellationToken cancellationToken);
+    Task<FanoutProgress> GetProgressAsync(Guid authorId, CancellationToken cancellationToken);
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Application/Feeds/IFeedWorkQueue.cs ==========
+
+using ITFPulse.Contracts.Messaging;
+
+namespace ITFPulse.Application.Feeds;
+
+public interface IFeedWorkQueue
+{
+    Task PlanAsync(PlanPostFanoutV1 command, CancellationToken cancellationToken);
+    Task DeliverAsync(DeliverPostToFollowersV1 command, CancellationToken cancellationToken);
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Application/Feeds/PlanPostFanoutHandler.cs ==========
+
+using ITFPulse.Contracts.Messaging;
+
+namespace ITFPulse.Application.Feeds;
+
+public sealed class PlanPostFanoutHandler(IFeedStore store, IFeedWorkQueue queue)
+{
+    public const int BatchSize = 500;
+
+    public async Task Handle(PlanPostFanoutV1 command, CancellationToken cancellationToken)
+    {
+        if (command.PostId == Guid.Empty || command.AuthorId == Guid.Empty || command.AfterFollowerId < 0)
+            throw new ArgumentException("Invalid fan-out command.");
+        var followers = await store.GetFollowersAsync(command.AuthorId, command.CreatedAt,
+            command.AfterFollowerId, BatchSize, cancellationToken);
+        if (followers.Count == 0) return;
+        await queue.DeliverAsync(new(command.PostId, command.CreatedAt,
+            followers.Select(f => f.FollowerId).ToArray()), cancellationToken);
+        if (followers.Count == BatchSize)
+            await queue.PlanAsync(command with { AfterFollowerId = followers[^1].Id }, cancellationToken);
+        // Consumer outbox commits both commands atomically before acknowledging this page.
+    }
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Application/Feeds/DeliverPostToFollowersHandler.cs ==========
+
+using ITFPulse.Contracts.Messaging;
+
+namespace ITFPulse.Application.Feeds;
+
+public sealed class DeliverPostToFollowersHandler(IFeedStore store)
+{
+    public Task Handle(DeliverPostToFollowersV1 command, CancellationToken cancellationToken)
+    {
+        if (command.PostId == Guid.Empty || command.FollowerIds is not { Length: > 0 and <= PlanPostFanoutHandler.BatchSize }
+            || command.FollowerIds.Any(id => id == Guid.Empty))
+            throw new ArgumentException("A delivery requires a post and 1–500 valid followers.");
+        return store.DeliverAsync(command.PostId, command.CreatedAt, command.FollowerIds, cancellationToken);
+    }
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Infrastructure/Persistence/Repositories/PostRepository.cs ==========
+
+using ITFPulse.Application.Abstractions.Persistence;
+using ITFPulse.Domain.Posts;
+using ITFPulse.Contracts.Messaging;
+using MassTransit;
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace ITFPulse.Infrastructure.Persistence.Repositories
+{
+    internal sealed class PostRepository : IPostRepository
+    {
+        private readonly ITFPulseDbContext _dbContext;
+        private readonly IPublishEndpoint _publisher;
+
+        public PostRepository(
+            ITFPulseDbContext dbContext, IPublishEndpoint publisher)
+        {
+            _dbContext = dbContext;
+            _publisher = publisher;
+        }
+
+        public async Task AddAsync(
+            Post post,
+            CancellationToken cancellationToken = default)
+        {
+            await _dbContext.Posts.AddAsync(
+                post,
+                cancellationToken);
+
+            // Scoped IPublishEndpoint is replaced by the EF bus outbox. No broker call here.
+            foreach (var domainEvent in post.DomainEvents)
+            {
+                if (domainEvent is not PostCreated created)
+                    throw new InvalidOperationException($"Unmapped event: {domainEvent.GetType().Name}");
+                await _publisher.Publish(new PostCreatedV1(created.EventId, created.PostId,
+                    created.AuthorId, created.OccurredAt), context => context.MessageId = created.EventId,
+                    cancellationToken);
+            }
+            await _dbContext.SaveChangesAsync(
+                cancellationToken);
+            post.ClearDomainEvents();
+        }
+    }
+}
+
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Infrastructure/Persistence/Repositories/FeedStore.cs ==========
+
+using ITFPulse.Application.Feeds;
+using ITFPulse.Domain.Followers;
+using Microsoft.EntityFrameworkCore;
+
+namespace ITFPulse.Infrastructure.Persistence.Repositories;
+
+internal sealed class FeedStore(ITFPulseDbContext db) : IFeedStore
+{
+    public async Task FollowAsync(Follow follow, CancellationToken cancellationToken) =>
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO itfpulse.follows (author_id, follower_id, followed_at)
+            VALUES ({follow.AuthorId}, {follow.FollowerId}, {follow.FollowedAt})
+            ON CONFLICT (author_id, follower_id) DO NOTHING
+            """, cancellationToken);
+
+    public async Task<IReadOnlyList<FollowerPageItem>> GetFollowersAsync(Guid authorId,
+        DateTimeOffset cutoff, long afterId, int limit, CancellationToken cancellationToken) =>
+        await db.Follows.AsNoTracking()
+            .Where(x => x.AuthorId == authorId && x.Id > afterId && x.FollowedAt <= cutoff)
+            .OrderBy(x => x.Id).Take(limit)
+            .Select(x => new FollowerPageItem(x.Id, x.FollowerId)).ToListAsync(cancellationToken);
+
+    public async Task DeliverAsync(Guid postId, DateTimeOffset createdAt, Guid[] followerIds,
+        CancellationToken cancellationToken) =>
+        // One parameterized, set-based statement per batch; no 500 tracked EF entities.
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO itfpulse.feed_entries (follower_id, post_id, created_at)
+            SELECT follower_id, {postId}, {createdAt} FROM unnest({followerIds}) AS follower_id
+            ON CONFLICT (follower_id, post_id) DO NOTHING
+            """, cancellationToken);
+
+    public async Task<IReadOnlyList<FeedPost>> ReadAsync(Guid followerId, long? beforeSequence,
+        int limit, CancellationToken cancellationToken) =>
+        await (from entry in db.FeedEntries.AsNoTracking()
+               join post in db.Posts.AsNoTracking() on entry.PostId equals post.Id
+               where entry.FollowerId == followerId && (!beforeSequence.HasValue || entry.Sequence < beforeSequence.Value)
+               orderby entry.Sequence descending
+               select new FeedPost(entry.Sequence, post.Id, post.AuthorId,
+                   post.PostContent.Value, post.CreatedAt.Value))
+            .Take(limit).ToListAsync(cancellationToken);
+
+    public async Task<FanoutProgress> GetProgressAsync(Guid authorId, CancellationToken cancellationToken)
+    {
+        var posts = await db.Posts.LongCountAsync(x => x.AuthorId == authorId, cancellationToken);
+        var followers = await db.Follows.LongCountAsync(x => x.AuthorId == authorId, cancellationToken);
+        var entries = await (from entry in db.FeedEntries
+                             join post in db.Posts on entry.PostId equals post.Id
+                             where post.AuthorId == authorId select entry).LongCountAsync(cancellationToken);
+        return new(posts, followers, entries);
+    }
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Infrastructure/Persistence/ITFPulseDbContext.cs ==========
+
+using ITFPulse.Domain.Posts;
+using Microsoft.EntityFrameworkCore;
+using ITFPulse.Domain.Followers;
+using MassTransit;
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace ITFPulse.Infrastructure.Persistence
+{
+    public sealed class ITFPulseDbContext : DbContext
+    {
+        public ITFPulseDbContext(DbContextOptions<ITFPulseDbContext> options) : base(options)
+        {
+        }
+
+        public DbSet<Post> Posts => Set<Post>();
+        public DbSet<Follow> Follows => Set<Follow>();
+        public DbSet<FeedEntry> FeedEntries => Set<FeedEntry>();
+
+        protected override void OnModelCreating(
+            ModelBuilder modelBuilder)
+        {
+            modelBuilder.HasDefaultSchema("itfpulse");
+            modelBuilder.AddInboxStateEntity();
+            modelBuilder.AddOutboxMessageEntity();
+            modelBuilder.AddOutboxStateEntity();
+
+            modelBuilder.Entity<Follow>(b =>
+            {
+                b.ToTable("follows");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).HasColumnName("id").UseIdentityAlwaysColumn();
+                b.Property(x => x.AuthorId).HasColumnName("author_id");
+                b.Property(x => x.FollowerId).HasColumnName("follower_id");
+                b.Property(x => x.FollowedAt).HasColumnName("followed_at");
+                b.HasIndex(x => new { x.AuthorId, x.FollowerId }).IsUnique();
+                b.HasIndex(x => new { x.AuthorId, x.Id });
+            });
+            modelBuilder.Entity<FeedEntry>(b =>
+            {
+                b.ToTable("feed_entries");
+                b.HasKey(x => new { x.FollowerId, x.PostId });
+                b.Property(x => x.Sequence).HasColumnName("sequence").UseIdentityAlwaysColumn();
+                b.Property(x => x.FollowerId).HasColumnName("follower_id");
+                b.Property(x => x.PostId).HasColumnName("post_id");
+                b.Property(x => x.CreatedAt).HasColumnName("created_at");
+                b.HasIndex(x => new { x.FollowerId, x.Sequence });
+                b.HasIndex(x => x.PostId);
+                b.HasOne<Post>().WithMany().HasForeignKey(x => x.PostId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.ApplyConfigurationsFromAssembly(
+                typeof(ITFPulseDbContext).Assembly);
+        }
+    }
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Infrastructure/Messaging/MessagingSetup.cs ==========
+
+using ITFPulse.Application.Feeds;
+using ITFPulse.Infrastructure.Persistence;
+using MassTransit;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace ITFPulse.Infrastructure.Messaging;
+
+public static class MessagingSetup
+{
+    public const string EventQueue = "itfpulse-post-created-v1";
+    public const string PlanQueue = "itfpulse-plan-fanout-v1";
+    public const string DeliveryQueue = "itfpulse-deliver-feed-v1";
+
+    public static IServiceCollection AddFeedMessaging(this IServiceCollection services,
+        IConfiguration configuration, bool worker = false, bool deployOnly = false)
+    {
+        var role = configuration["Messaging:Role"] ?? "all";
+        if (role is not ("all" or "planner" or "delivery"))
+            throw new InvalidOperationException("Messaging:Role must be all, planner or delivery.");
+        var concurrency = int.Parse(configuration["Messaging:Concurrency"] ?? "8");
+        var prefetch = int.Parse(configuration["Messaging:Prefetch"] ?? "16");
+        if (concurrency is < 1 or > 128 || prefetch < concurrency || prefetch > 512)
+            throw new InvalidOperationException("Messaging requires concurrency 1–128 and prefetch between concurrency and 512.");
+
+        services.AddScoped<IFeedWorkQueue, FeedWorkQueue>();
+        services.AddMassTransit(bus =>
+        {
+            bus.AddEntityFrameworkOutbox<ITFPulseDbContext>(outbox =>
+            {
+                outbox.UsePostgres();
+                outbox.QueryDelay = TimeSpan.FromMilliseconds(250);
+                outbox.DuplicateDetectionWindow = TimeSpan.FromHours(1);
+                if (!worker) outbox.UseBusOutbox();
+            });
+            if (worker)
+            {
+                if (role is "all" or "planner")
+                {
+                    bus.AddConsumer<PostCreatedConsumer>();
+                    bus.AddConsumer<PlanPostFanoutConsumer>();
+                }
+                if (role is "all" or "delivery") bus.AddConsumer<DeliverPostToFollowersConsumer>();
+            }
+            bus.UsingRabbitMq((context, rabbit) =>
+            {
+                rabbit.Host(configuration["Messaging:Host"] ?? "localhost", "/", host =>
+                {
+                    host.Username(configuration["Messaging:Username"] ?? "pulse");
+                    host.Password(configuration["Messaging:Password"]
+                        ?? throw new InvalidOperationException("Messaging:Password is required."));
+                });
+                rabbit.DeployTopologyOnly = deployOnly;
+                if (!worker) return;
+
+                void Configure(IRabbitMqReceiveEndpointConfigurator endpoint)
+                {
+                    endpoint.SetQuorumQueue(3);
+                    endpoint.PrefetchCount = (ushort)prefetch;
+                    endpoint.ConcurrentMessageLimit = concurrency;
+                    endpoint.UseMessageRetry(retry =>
+                    {
+                        retry.Ignore<ArgumentException>();
+                        retry.Intervals(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1));
+                    });
+                    endpoint.UseEntityFrameworkOutbox<ITFPulseDbContext>(context);
+                }
+                if (role is "all" or "planner")
+                {
+                    rabbit.ReceiveEndpoint(EventQueue, endpoint =>
+                    {
+                        Configure(endpoint);
+                        endpoint.ConfigureConsumer<PostCreatedConsumer>(context);
+                    });
+                    rabbit.ReceiveEndpoint(PlanQueue, endpoint =>
+                    {
+                        Configure(endpoint);
+                        endpoint.ConfigureConsumer<PlanPostFanoutConsumer>(context);
+                    });
+                }
+                if (role is "all" or "delivery")
+                    rabbit.ReceiveEndpoint(DeliveryQueue, endpoint =>
+                    {
+                        Configure(endpoint);
+                        endpoint.ConfigureConsumer<DeliverPostToFollowersConsumer>(context);
+                    });
+            });
+        });
+        return services;
+    }
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Infrastructure/Messaging/FeedConsumers.cs ==========
+
+using ITFPulse.Application.Feeds;
+using ITFPulse.Contracts.Messaging;
+using MassTransit;
+
+namespace ITFPulse.Infrastructure.Messaging;
+
+public sealed class PostCreatedConsumer(IFeedWorkQueue queue) : IConsumer<PostCreatedV1>
+{
+    public Task Consume(ConsumeContext<PostCreatedV1> context) => queue.PlanAsync(
+        new(context.Message.PostId, context.Message.AuthorId, context.Message.CreatedAt, 0), context.CancellationToken);
+}
+
+public sealed class PlanPostFanoutConsumer(PlanPostFanoutHandler handler) : IConsumer<PlanPostFanoutV1>
+{
+    public Task Consume(ConsumeContext<PlanPostFanoutV1> context) => handler.Handle(context.Message, context.CancellationToken);
+}
+
+public sealed class DeliverPostToFollowersConsumer(DeliverPostToFollowersHandler handler) : IConsumer<DeliverPostToFollowersV1>
+{
+    public Task Consume(ConsumeContext<DeliverPostToFollowersV1> context) => handler.Handle(context.Message, context.CancellationToken);
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Infrastructure/Messaging/FeedWorkQueue.cs ==========
+
+using ITFPulse.Application.Feeds;
+using ITFPulse.Contracts.Messaging;
+using MassTransit;
+
+namespace ITFPulse.Infrastructure.Messaging;
+
+internal sealed class FeedWorkQueue(ISendEndpointProvider endpoints) : IFeedWorkQueue
+{
+    public async Task PlanAsync(PlanPostFanoutV1 command, CancellationToken cancellationToken)
+    {
+        // Topology is provisioned by --initialize. Sending to its exchange avoids
+        // accidentally redeclaring the existing quorum queue as a classic queue.
+        var endpoint = await endpoints.GetSendEndpoint(new Uri($"exchange:{MessagingSetup.PlanQueue}"));
+        await endpoint.Send(command, cancellationToken);
+    }
+
+    public async Task DeliverAsync(DeliverPostToFollowersV1 command, CancellationToken cancellationToken)
+    {
+        var endpoint = await endpoints.GetSendEndpoint(new Uri($"exchange:{MessagingSetup.DeliveryQueue}"));
+        await endpoint.Send(command, cancellationToken);
+    }
+}
+
+
+========== SOURCE FILE: backend/src/ITFPulse.Worker/Program.cs ==========
+
+using ITFPulse.Application;
+using ITFPulse.Infrastructure;
+using ITFPulse.Infrastructure.Messaging;
+using ITFPulse.Infrastructure.Persistence;
+using MassTransit;
+using Microsoft.EntityFrameworkCore;
+
+var initialize = args.Contains("--initialize");
+var builder = Host.CreateApplicationBuilder(args.Where(a => a != "--initialize").ToArray());
+builder.Configuration.AddEnvironmentVariables("ITFPULSE_");
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddFeedMessaging(builder.Configuration, worker: true, deployOnly: initialize);
+using var host = builder.Build();
+if (initialize)
+{
+    // Explicit, one-shot deployment step. Never race migrations in API/worker replicas.
+    using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+    await using var scope = host.Services.CreateAsyncScope();
+    await scope.ServiceProvider.GetRequiredService<ITFPulseDbContext>().Database.MigrateAsync(timeout.Token);
+    await host.Services.GetRequiredService<IBusControl>().DeployAsync(timeout.Token);
+    return;
+}
+await host.RunAsync();
+
+
+========== SOURCE FILE: compose.week5.yml ==========
+
+name: itfpulse-week5
+
+x-environment: &environment
+  ITFPULSE_ConnectionStrings__ITFPulse: Host=postgres;Database=pulse;Username=pulse;Password=local-pulse-demo;Maximum Pool Size=40
+  ITFPULSE_Messaging__Host: rabbitmq
+  ITFPULSE_Messaging__Username: pulse
+  ITFPULSE_Messaging__Password: local-pulse-demo
+  Logging__LogLevel__Default: Warning
+  Logging__LogLevel__MassTransit: Information
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: pulse
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: local-pulse-demo
+    ports: ["127.0.0.1:5545:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse -d pulse"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: pulse
+      RABBITMQ_DEFAULT_PASS: local-pulse-demo
+    ports: ["127.0.0.1:5675:5672", "127.0.0.1:15675:15672"]
+    volumes: ["rabbit-data:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  initialize:
+    build:
+      context: ./backend
+      args: { PROJECT: ITFPulse.Worker }
+    image: itfpulse-week5-worker
+    command: ["ITFPulse.Worker.dll", "--initialize"]
+    environment: *environment
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+  api:
+    build:
+      context: ./backend
+      args: { PROJECT: ITFPulse.Api }
+    image: itfpulse-week5-api
+    command: ["ITFPulse.Api.dll"]
+    environment:
+      <<: *environment
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_HTTP_PORTS: 8080
+      ITFPULSE_Cors__AllowedOrigins__0: http://localhost:6510
+    ports: ["127.0.0.1:5155:8080"]
+    depends_on:
+      initialize: { condition: service_completed_successfully }
+  planner:
+    image: itfpulse-week5-worker
+    command: ["ITFPulse.Worker.dll"]
+    environment:
+      <<: *environment
+      ITFPULSE_Messaging__Role: planner
+    depends_on:
+      initialize: { condition: service_completed_successfully }
+  worker:
+    image: itfpulse-week5-worker
+    command: ["ITFPulse.Worker.dll"]
+    environment:
+      <<: *environment
+      ITFPULSE_Messaging__Role: delivery
+      ITFPULSE_Messaging__Concurrency: ${FEED_CONCURRENCY:-8}
+      ITFPULSE_Messaging__Prefetch: ${FEED_PREFETCH:-16}
+    depends_on:
+      initialize: { condition: service_completed_successfully }
+
+volumes:
+  postgres-data:
+  rabbit-data:
+

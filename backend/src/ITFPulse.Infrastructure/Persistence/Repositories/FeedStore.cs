@@ -13,6 +13,7 @@ internal sealed class FeedStore(ITFPulseDbContext db) : IFeedStore
             ON CONFLICT (author_id, follower_id) DO NOTHING
             """, cancellationToken);
 
+    // Use the (author_id, id) index to read the next bounded page without scanning an increasing OFFSET.
     public async Task<IReadOnlyList<FollowerPageItem>> GetFollowersAsync(Guid authorId,
         DateTimeOffset cutoff, long afterId, int limit, CancellationToken cancellationToken) =>
         await db.Follows.AsNoTracking()
@@ -23,12 +24,15 @@ internal sealed class FeedStore(ITFPulseDbContext db) : IFeedStore
     public async Task DeliverAsync(Guid postId, DateTimeOffset createdAt, Guid[] followerIds,
         CancellationToken cancellationToken) =>
         // One parameterized, set-based statement per batch; no 500 tracked EF entities.
+        // This SQL participates in the consumer outbox transaction on the shared scoped DbContext.
+        // The unique key plus ON CONFLICT also handles replays with a new transport MessageId.
         await db.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO itfpulse.feed_entries (follower_id, post_id, created_at)
             SELECT follower_id, {postId}, {createdAt} FROM unnest({followerIds}) AS follower_id
             ON CONFLICT (follower_id, post_id) DO NOTHING
             """, cancellationToken);
 
+    // Feed entries reference the original post. Order by delivery sequence, since batches can arrive out of order.
     public async Task<IReadOnlyList<FeedPost>> ReadAsync(Guid followerId, long? beforeSequence,
         int limit, CancellationToken cancellationToken) =>
         await (from entry in db.FeedEntries.AsNoTracking()

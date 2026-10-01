@@ -22,6 +22,7 @@ namespace ITFPulse.Infrastructure.Persistence
             ModelBuilder modelBuilder)
         {
             modelBuilder.HasDefaultSchema("itfpulse");
+            // Persist transport deduplication and pending publications alongside application data.
             modelBuilder.AddInboxStateEntity();
             modelBuilder.AddOutboxMessageEntity();
             modelBuilder.AddOutboxStateEntity();
@@ -40,6 +41,7 @@ namespace ITFPulse.Infrastructure.Persistence
             modelBuilder.Entity<FeedEntry>(b =>
             {
                 b.ToTable("feed_entries");
+                // Enforce one feed reference per follower/post, independently of transport deduplication.
                 b.HasKey(x => new { x.FollowerId, x.PostId });
                 b.Property(x => x.Sequence).HasColumnName("sequence").UseIdentityAlwaysColumn();
                 b.Property(x => x.FollowerId).HasColumnName("follower_id");

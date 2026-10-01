@@ -8,6 +8,7 @@ namespace ITFPulse.Infrastructure.Messaging;
 
 public static class MessagingSetup
 {
+    // Stable queue names let worker replicas compete for the same work instead of each receiving a copy.
     public const string EventQueue = "itfpulse-post-created-v1";
     public const string PlanQueue = "itfpulse-plan-fanout-v1";
     public const string DeliveryQueue = "itfpulse-deliver-feed-v1";
@@ -15,6 +16,7 @@ public static class MessagingSetup
     public static IServiceCollection AddFeedMessaging(this IServiceCollection services,
         IConfiguration configuration, bool worker = false, bool deployOnly = false)
     {
+        // The API only publishes; worker roles allow planning and delivery to scale independently.
         var role = configuration["Messaging:Role"] ?? "all";
         if (role is not ("all" or "planner" or "delivery"))
             throw new InvalidOperationException("Messaging:Role must be all, planner or delivery.");
@@ -30,7 +32,10 @@ public static class MessagingSetup
             {
                 outbox.UsePostgres();
                 outbox.QueryDelay = TimeSpan.FromMilliseconds(250);
+                // Inbox deduplication is time-limited; the feed's unique key also protects against later replays.
                 outbox.DuplicateDetectionWindow = TimeSpan.FromHours(1);
+                // API-scoped Publish writes to the post's DbContext. A background service forwards
+                // committed outbox messages to RabbitMQ and retries when the broker is unavailable.
                 if (!worker) outbox.UseBusOutbox();
             });
             if (worker)
@@ -50,19 +55,26 @@ public static class MessagingSetup
                     host.Password(configuration["Messaging:Password"]
                         ?? throw new InvalidOperationException("Messaging:Password is required."));
                 });
+                // Declare subscriptions before the API can publish, without consuming work during initialization.
                 rabbit.DeployTopologyOnly = deployOnly;
                 if (!worker) return;
 
                 void Configure(IRabbitMqReceiveEndpointConfigurator endpoint)
                 {
+                    // Three is the requested replica count; the single-node local broker is not highly available.
                     endpoint.SetQuorumQueue(3);
+                    // Prefetch bounds in-flight deliveries; concurrency bounds active handlers per endpoint.
                     endpoint.PrefetchCount = (ushort)prefetch;
                     endpoint.ConcurrentMessageLimit = concurrency;
+                    // Invalid payloads skip retries; exhausted failures go to the endpoint's _error queue
+                    // through MassTransit's default error handling.
                     endpoint.UseMessageRetry(retry =>
                     {
                         retry.Ignore<ArgumentException>();
                         retry.Intervals(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1));
                     });
+                    // Commit inbox state, database effects and outgoing commands together.
+                    // Deliver outgoing messages before acknowledging successful consumption.
                     endpoint.UseEntityFrameworkOutbox<ITFPulseDbContext>(context);
                 }
                 if (role is "all" or "planner")

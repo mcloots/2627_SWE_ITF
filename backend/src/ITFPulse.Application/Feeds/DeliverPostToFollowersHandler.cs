@@ -6,9 +6,11 @@ public sealed class DeliverPostToFollowersHandler(IFeedStore store)
 {
     public Task Handle(DeliverPostToFollowersV1 command, CancellationToken cancellationToken)
     {
+        // Reject malformed or oversized messages before writing; transport configuration skips retries for these.
         if (command.PostId == Guid.Empty || command.FollowerIds is not { Length: > 0 and <= PlanPostFanoutHandler.BatchSize }
             || command.FollowerIds.Any(id => id == Guid.Empty))
             throw new ArgumentException("A delivery requires a post and 1–500 valid followers.");
+        // Delivery may be repeated after a crash. The store must make the feed write idempotent.
         return store.DeliverAsync(command.PostId, command.CreatedAt, command.FollowerIds, cancellationToken);
     }
 }

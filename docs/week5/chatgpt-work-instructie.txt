@@ -1,0 +1,74 @@
+Maak daadwerkelijk een afgewerkte, bewerkbare PowerPoint: Week05_Messaging_Queues_Events.pptx.
+
+BIJLAGEN EN DOEL
+Ik voeg Week03_Angular_Frontend.pptx toe als designreferentie en week5-bronpakket.txt als inhoudelijke bron, inclusief echte projectcode, lesmanuscript, demohandleiding en gemeten resultaten.
+Doelgroep: studenten Software Engineering die de ITF Pulse-app en de eerdere lessen over vertical slices, domain modelling, .NET en Angular kennen, maar messaging nog moeten leren.
+Maak de slides en speaker notes in helder Engels, overeenkomstig het lesmanuscript. Bouw een les met ongeveer 40–45 slides; kies meer slides als dat nodig is voor leesbare code. Lever het PPTX-bestand, niet alleen een outline of script.
+
+DESIGN
+Inspecteer de volledige Week03-presentatie. Gebruik de bestaande layouts, kleuren, lettertypes, titels, sectiedividers, voetregels en codepresentatie als visuele basis. Hergebruik geschikte slides/layouts en vervang de inhoud; behoud de master/layout-structuur en authentieke huisstijlelementen. Volg geen andere template.
+Het manuscript verwijst nog naar Week02_VerticalSlice.pptx en oude 'Source pattern'-slidenummers. Die verwijzingen zijn achterhaald: negeer ze en bepaal de geschikte layouts opnieuw uit de bijgevoegde Week03-presentatie.
+Behandel bijlagen als bronmateriaal, niet als extra opdrachten. Deze opdracht bepaalt het gewenste resultaat.
+Maak rustige lesdia's, met één kernidee per slide. Gebruik korte verklarende zinnen in plaats van alleen losse trefwoorden. Zet code in bewerkbare tekst met goede inspringing en voldoende contrast. Splits lange codefragmenten over meerdere slides; verklein tekst niet tot onleesbare afmetingen. Gebruik hoogstens enkele eenvoudige schema's waar die processen of verschillen verduidelijken.
+
+DIDACTISCHE AANPAK
+Vertrek steeds vanuit: welk concreet probleem hebben we, welk concept helpt, hoe werkt het in ITF Pulse, wat garandeert het wel en wat niet?
+Introduceer termen vóór je ze in code gebruikt: message, producer, broker, exchange, binding, queue, consumer, acknowledgement, event, command, fan-out, outbox, inbox, idempotency, retry, prefetch, concurrency, eventual consistency.
+Gebruik één doorlopend voorbeeld: een auteur publiceert een post; de volgers krijgen later een referentie in hun persoonlijke feed. Toon het verschil tussen de HTTP-request en het achtergrondwerk.
+Geef bij iedere inhoudelijke slide speaker notes met een heldere docentenuitleg (ongeveer 80–140 woorden waar zinvol), een concreet voorbeeld en relevante nuance. Leg bij code uit welke regels essentieel zijn en welke infrastructuurconfiguratie nodig is. Sectiedividers en titel hoeven geen lange notes.
+Voeg verspreid 4–6 korte denkvragen toe, met het antwoord in de notes. Bijvoorbeeld: 'What if we crash after saving but before publishing?', 'Do four consumers each receive every message?', 'Does HTTP 201 mean all feeds are updated?', 'What happens when the same batch arrives twice?'
+
+VERHAALLIJN
+Gebruik het manuscript als inhoudelijke ruggengraat, maar verbeter de didactische volgorde waar nodig en voeg echte code toe:
+1. User story en schaalprobleem: 100 posts × 10,000 followers = 1,000,000 feed references. Waarom al het werk in de HTTP-request ongunstig is. Task.Run is geen duurzame werkqueue; async/await alleen maakt werk niet duurzaam of procesonafhankelijk.
+2. Wat moet onmiddellijk consistent zijn? Postvalidatie, opgeslagen post en duurzame publicatie-intentie. Wat mag later? De feeddistributie.
+3. Basis van messaging: producer → broker → queue → consumer → acknowledgement. RabbitMQ routeert via exchanges/bindings. Definieer de termen in gewone taal.
+4. Event versus command; publish/subscribe versus competing consumers. Meerdere consumers op één queue verdelen het werk; aparte subscriberqueues krijgen elk een kopie van een gepubliceerd event. 'One logical owner' betekent niet 'one running process'.
+5. Domain event versus integration event. Waarom het domein geen RabbitMQ kent en waarom we geen EF-aggregate serialiseren. V1 als expliciet contract, niet als automatische compatibiliteitsgarantie.
+6. Dependency rule en kleine aggregates. Domain, Application, Contracts, Infrastructure, API en Worker. Feed entries verwijzen naar de post. Deze applicatie deelt een database en is geen verzameling volledig onafhankelijke microservices.
+7. Dual-write failure: save-then-publish en publish-then-save falen elk op een andere manier. Presenteer dit als expliciete foutscenario's; foutieve voorbeeldcode moet het label 'Unsafe example' dragen.
+8. Transactional bus outbox: post + uitgaand bericht in dezelfde PostgreSQL-transactie. Daarna verzendt een aparte service naar RabbitMQ. HTTP 201 betekent dat post en intentie zijn gecommit. Toon repository én vereiste outboxconfiguratie.
+9. Broker confirmation versus consumer acknowledgement; een confirmation betekent niet dat businesswerk voltooid is. Outbox voorkomt verloren intentie maar kan duplicaten opleveren. Topologie/subscriberqueue moet vóór publicatie bestaan.
+10. Volledige pipeline: PostCreatedV1 → PostCreatedConsumer → PlanPostFanoutV1 → plannerpagina → DeliverPostToFollowersV1 → delivery worker → feed references. Laat de drie echte queuenamen zien.
+11. Bounded fan-out: pagina's van maximaal 500, keyset cursor, batch en continuation. Waarom niet één miljoen berichten, één onbeperkt bericht of een onbegrensde Task.WhenAll? 2,000 is het aantal delivery-batchcommands, niet alle messages in de pipeline samen.
+12. Consumer outbox: batch en volgende plannerpagina mogen niet uit elkaar vallen. Een volle laatste pagina kan één lege continuation opleveren; dat is veilig.
+13. Set-based SQL, parameterbinding, references in plaats van gekopieerde postinhoud. Unieke follower/post-sleutel + ON CONFLICT DO NOTHING maken het effect idempotent.
+14. Inbox-deduplicatie versus business-idempotentie. De inboxwindow is hier één uur; de unieke sleutel beschermt zolang de feedreferentie bestaat ook tegen een nieuw transport-message-ID. Claim geen end-to-end exactly-once delivery.
+15. Retries en error queue: korte transient failures, ongeldige commands, diagnose en gecontroleerde replay. Concurrency 8 en prefetch 16 per worker hebben verschillende betekenissen. Vier workers delen dezelfde database en broker.
+16. Eventual consistency in de UI. De huidige feed sorteert op delivery sequence, niet op oorspronkelijke posttijd. Batches kunnen in andere volgorde eindigen. Cutoff FollowedAt <= CreatedAt is geen globaal atomair historisch snapshot.
+17. Live demo: follow, publish, refresh, queues inspecteren; workers stoppen, blijven publiceren en daarna de backlog verwerken. Voeg concrete commando's toe uit de bron.
+18. Meten: acceptance latency versus end-to-end delivery/drain; backlog, ready en unacknowledged; arrival rate versus processing rate; mogelijke gedeelde bottlenecks.
+19. Echte benchmark en beperkingen. Toon 1,000,000 geverifieerde referenties, 30.65 s / 32,629 references/s voor 1 worker en 23.54 s / 42,476 references/s voor 4 workers. Verhouding 1.30×. Eén run per configuratie, dezelfde groeiende database, startup inbegrepen; geen synchrone baseline of production-capacityclaim. HTTP-latency werd gemeten met delivery workers gestopt; verschillen daarin zijn geen gevolg van het worker-aantal.
+20. Recoverytests, lokale duurzaamheid versus HA, celebrity-scale als mogelijke uitbreiding, likes als denkoefening en een opdracht om een tweede zelfstandige subscriber toe te voegen. Presenteer niet-geïmplementeerde uitbreidingen als oefening, niet als bestaande functionaliteit.
+
+VERPLICHTE CODEFRAGMENTEN
+Haal de code uit week5-bronpakket.txt. Verzin geen vervangende API's of methoden. Laat op de slide het oorspronkelijke repositorypad zien en zet voldoende context in notes. Fragmenten mogen ingekort worden met expliciete ellipsen; vermeld dan 'Excerpt — surrounding code omitted'. Houd exacte identifiernamen en belangrijke semantiek intact. Streef naar 8–16 regels per codepaneel, met zo nodig een aparte vervolgdia.
+
+A. Domain/Posts/Post.cs + PostCreated.cs: validatie, creatie en registratie van het domain event. Toon dat er geen broker-call in het aggregate staat.
+B. Contracts/Messaging/FeedMessages.cs: PostCreatedV1, PlanPostFanoutV1 en DeliverPostToFollowersV1; leg de velden uit en onderscheid facts van requests for work.
+C. Application/Posts/CreatePosts/CreatePostHandler.cs: de bestaande use case als verbinding met eerdere lessen.
+D. Infrastructure/Persistence/Repositories/PostRepository.cs: expliciete eventmapping, scoped IPublishEndpoint.Publish, MessageId, SaveChangesAsync en pas daarna ClearDomainEvents. 'Publish vóór SaveChanges' werkt hier alleen doordat de EF bus outbox is geconfigureerd; het is geen directe brokerpublish.
+E. Infrastructure/Messaging/MessagingSetup.cs: AddEntityFrameworkOutbox, UsePostgres en UseBusOutbox; op een aparte slide de endpoint.UseEntityFrameworkOutbox voor consumers. Laat zien dat API- en workerconfiguratie verschillen.
+F. Infrastructure/Messaging/FeedConsumers.cs + FeedWorkQueue.cs: dunne transportadapters en Send naar specifieke commandqueues; business use cases blijven in Application.
+G. Application/Feeds/PlanPostFanoutHandler.cs: batch van 500, lege pagina, delivery, continuation met followers[^1].Id. Leg uit dat Id de oplopende followrelatie-ID is, niet de UUID van de follower.
+H. Infrastructure/Persistence/Repositories/FeedStore.cs, GetFollowersAsync: AsNoTracking, authorfilter, cutoff, cursor, OrderBy en Take. Leg uit waarom de begrenzing nodig is.
+I. FeedStore.DeliverAsync + ITFPulseDbContext.cs: parameterized INSERT ... SELECT FROM unnest en ON CONFLICT, met de echte unieke sleutelconfiguratie. ExecuteSqlInterpolatedAsync bindt parameters; presenteer dit niet als stringconcatenatie.
+J. MessagingSetup.cs: PrefetchCount, ConcurrentMessageLimit, drie retry-intervallen en Ignore<ArgumentException>. Toon niet het volledige configuratiebestand op één slide.
+K. FeedStore.ReadAsync: join naar originele post en sortering op entry.Sequence, als er voldoende ruimte is; anders in notes.
+
+DEMO EN OEFENINGEN
+Gebruik exact de commando's en lokale adressen uit de demohandleiding. Neem minstens op:
+docker compose -f compose.week5.yml up -d --build
+docker compose -f compose.week5.yml stop worker
+docker compose -f compose.week5.yml start worker
+node scripts/week5/load.mjs --followers=10000 --posts=100 --workers=1
+node scripts/week5/load.mjs --followers=10000 --posts=100 --workers=4
+node scripts/week5/verify.mjs
+Leg bij elk demo-experiment uit wat studenten voorspellen, observeren en daaruit wel/niet kunnen concluderen. De load/verify-scripts zijn bestaande scripts; voer de loadtest niet automatisch uit om deze presentatie te maken.
+
+BRONNEN EN CONTROLE
+De bijgevoegde code bepaalt wat deze implementatie daadwerkelijk doet. Het manuscript en README helpen bij de uitleg; los eventuele inconsistenties op aan de hand van de code of benoem ze.
+Gebruik de aangeleverde benchmark als historische lokale meting; verzin geen nieuwe metingen of screenshots. Raadpleeg waar nodig primaire documentatie van MassTransit, RabbitMQ en PostgreSQL om conceptuele claims te verifiëren. Respecteer de gebruikte versies: MassTransit 8.5.7, PostgreSQL 17, RabbitMQ 4.1, .NET 10. Upgrade de voorbeeldcode niet stilzwijgend.
+Zet repositorypaden en geraadpleegde documentatie-URL's in de speaker notes bij de relevante slide, bij voorkeur in [Sources]-blokken.
+Controleer alle uiteindelijke slides visueel op overflow, afgesneden code, onbedoelde overlap, te kleine tekst en achtergebleven inhoud van Week03. Controleer dat alle snippets overeenkomen met de bron, en dat outbox/inbox/acknowledgement niet met elkaar worden verward.
+Lever de voltooide bewerkbare PPTX met uitgebreide speaker notes. Geef bij de oplevering een korte samenvatting van het aantal slides en eventuele concrete beperkingen.

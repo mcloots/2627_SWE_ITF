@@ -13,6 +13,7 @@ builder.Configuration.AddEnvironmentVariables("ITFPULSE_");
 // Add services to the container.
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+// API mode registers the publishing outbox; queue consumers run in the separate Worker process.
 builder.Services.AddFeedMessaging(builder.Configuration);
 
 builder.Services.AddControllers();

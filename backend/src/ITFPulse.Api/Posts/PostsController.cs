@@ -40,6 +40,7 @@ namespace ITFPulse.Api.Posts
 
             var response = new CreatePostResponse(postId);
 
+            // 201 confirms the post and outbox commit, not completion of asynchronous follower delivery.
             return Created(
                 $"/api/posts/{postId}",
                 response);

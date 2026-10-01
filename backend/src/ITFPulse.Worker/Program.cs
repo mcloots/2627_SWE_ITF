@@ -18,7 +18,9 @@ if (initialize)
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
     await using var scope = host.Services.CreateAsyncScope();
     await scope.ServiceProvider.GetRequiredService<ITFPulseDbContext>().Database.MigrateAsync(timeout.Token);
+    // Provision every queue/binding before accepting posts, so published events have a subscription.
     await host.Services.GetRequiredService<IBusControl>().DeployAsync(timeout.Token);
     return;
 }
+// Normal mode starts the consumers selected by Messaging:Role and waits for shutdown.
 await host.RunAsync();

@@ -6,10 +6,12 @@ namespace ITFPulse.Infrastructure.Messaging;
 
 public sealed class PostCreatedConsumer(IFeedWorkQueue queue) : IConsumer<PostCreatedV1>
 {
+    // Translate a published fact into the first planning command. Zero starts before all follow-row IDs.
     public Task Consume(ConsumeContext<PostCreatedV1> context) => queue.PlanAsync(
         new(context.Message.PostId, context.Message.AuthorId, context.Message.CreatedAt, 0), context.CancellationToken);
 }
 
+// Keep transport concerns here; application handlers only see contracts and a cancellation token.
 public sealed class PlanPostFanoutConsumer(PlanPostFanoutHandler handler) : IConsumer<PlanPostFanoutV1>
 {
     public Task Consume(ConsumeContext<PlanPostFanoutV1> context) => handler.Handle(context.Message, context.CancellationToken);

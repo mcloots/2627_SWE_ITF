@@ -11,6 +11,7 @@ namespace ITFPulse.Infrastructure.Persistence.Repositories
     internal sealed class PostRepository : IPostRepository
     {
         private readonly ITFPulseDbContext _dbContext;
+        // Is delivered bij MassTransit --> ITFPulse.Infrastructure.Messaging.MessagingSetup
         private readonly IPublishEndpoint _publisher;
 
         public PostRepository(
@@ -33,12 +34,15 @@ namespace ITFPulse.Infrastructure.Persistence.Repositories
             {
                 if (domainEvent is not PostCreated created)
                     throw new InvalidOperationException($"Unmapped event: {domainEvent.GetType().Name}");
+                // Translate the domain fact to a versioned wire contract; retain its identity for inbox deduplication.
                 await _publisher.Publish(new PostCreatedV1(created.EventId, created.PostId,
                     created.AuthorId, created.OccurredAt), context => context.MessageId = created.EventId,
                     cancellationToken);
             }
+            // Commit the post and publication intent atomically, even if RabbitMQ is temporarily unavailable.
             await _dbContext.SaveChangesAsync(
                 cancellationToken);
+            // Clear only after a successful commit so a failed save does not silently discard the events.
             post.ClearDomainEvents();
         }
     }
