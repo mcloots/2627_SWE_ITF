@@ -1,0 +1,194 @@
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop, 'test-*', 'test/**']
+  workflow_dispatch:
+    inputs:
+      publish_only:
+        description: 'Bootstrap: publish the image without deploying (create Render services afterwards)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm test -- --watch=false
+        working-directory: frontend
+      - run: npm run build -- --configuration production
+        working-directory: frontend
+        env:
+          NG_APP_API_BASE_URL: https://example.invalid/api
+          NG_APP_APP_NAME: ITF Pulse CI
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build backend/ITFPulse.slnx --configuration Release
+      # These projects use xUnit v3's executable runner; Architecture uses VSTest.
+      - run: dotnet run --project backend/tests/ITFPulse.Domain.Tests --configuration Release --no-build
+      - run: dotnet run --project backend/tests/ITFPulse.Application.Tests --configuration Release --no-build
+      - run: dotnet test backend/tests/ITFPulse.Architecture.Tests --configuration Release --no-build
+      - uses: docker/setup-buildx-action@v3
+      - name: Verify API container build
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: false
+
+  target:
+    name: Select environment
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.select.outputs.environment }}
+    steps:
+      - id: select
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          case "$BRANCH" in
+            main) echo 'environment=prod' >> "$GITHUB_OUTPUT" ;;
+            develop) echo 'environment=dev' >> "$GITHUB_OUTPUT" ;;
+            test-*|test/*) echo 'environment=test' >> "$GITHUB_OUTPUT" ;;
+            *) echo 'Deployments require main, develop, test-* or test/*.' >&2; exit 1 ;;
+          esac
+
+  image:
+    name: Publish API image
+    needs: [checks, target]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: name
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "image=ghcr.io/${REPOSITORY,,}/api" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.name.outputs.image }}:${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - name: Record image for setup and rollback
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }}
+        run: echo "API image -> \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy ${{ needs.target.outputs.environment }}
+    needs: [target, image]
+    if: inputs.publish_only != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: ${{ needs.target.outputs.environment }}
+    concurrency:
+      group: deploy-${{ needs.target.outputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      API_IMAGE: ${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}
+      NG_APP_API_BASE_URL: ${{ vars.NG_APP_API_BASE_URL }}
+      NG_APP_APP_NAME: ${{ vars.NG_APP_APP_NAME || 'ITF Pulse' }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate environment setup
+        env:
+          DATABASE_CONNECTION_STRING: ${{ secrets.DATABASE_CONNECTION_STRING }}
+        run: |
+          for key in NG_APP_API_BASE_URL CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT CLOUDFLARE_API_TOKEN RENDER_SERVICE_ID RENDER_API_KEY DATABASE_CONNECTION_STRING; do
+            if [ -z "${!key}" ]; then echo "Missing environment setting: $key" >&2; exit 1; fi
+          done
+          [[ "$NG_APP_API_BASE_URL" == https://*/api ]] || { echo 'API URL must use HTTPS and end in /api (no trailing slash).'; exit 1; }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build -- --configuration production
+        working-directory: frontend
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply EF Core migrations to this environment
+        env:
+          ITFPULSE_ConnectionStrings__ITFPulse: ${{ secrets.DATABASE_CONNECTION_STRING }}
+        run: docker run --rm -e ITFPULSE_ConnectionStrings__ITFPulse "$API_IMAGE" --migrate
+      - name: Deploy API and wait until live
+        shell: bash
+        run: |
+          set -euo pipefail
+          deploy_url="https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys"
+          payload=$(jq -n --arg image "$API_IMAGE" '{imageUrl: $image}')
+          # Do not retry the POST: a lost response could otherwise create duplicate deployments.
+          response=$(curl --fail --silent --show-error --max-time 30 \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H 'Content-Type: application/json' \
+            --data "$payload" "$deploy_url")
+          deploy_id=$(jq -er '.id | select(type == "string" and length > 0)' <<< "$response")
+          echo "Waiting for Render deployment $deploy_id"
+          deadline=$((SECONDS + 1200))
+          while (( SECONDS < deadline )); do
+            # Only read-only status requests are retried for transient HTTP failures.
+            response=$(curl --fail --silent --show-error --max-time 30 \
+              --retry 4 --retry-delay 10 --retry-max-time 120 \
+              -H "Authorization: Bearer $RENDER_API_KEY" "$deploy_url/$deploy_id")
+            status=$(jq -er '.status | select(type == "string" and length > 0)' <<< "$response")
+            echo "Render status: $status"
+            case "$status" in
+              live) exit 0 ;;
+              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                echo "::error::Render deployment failed: $status"
+                exit 1
+                ;;
+            esac
+            sleep 15
+          done
+          echo '::error::Render did not become live within 20 minutes; inspect its dashboard.'
+          exit 1
+      - name: Check API health
+        run: curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 10 --max-time 30 "$NG_APP_API_BASE_URL/health"
+      - name: Deploy Angular to the environment's Pages project
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy frontend/dist/itf-pulse/browser --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }} --branch=main

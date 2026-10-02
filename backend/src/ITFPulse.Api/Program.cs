@@ -1,6 +1,8 @@
 using DotNetEnv;
 using ITFPulse.Application;
 using ITFPulse.Infrastructure;
+using ITFPulse.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 Env.Load();
 
@@ -35,6 +37,15 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+// CI runs this command once before deploying the same image to Render.
+if (args.Contains("--migrate"))
+{
+    await using var scope = app.Services.CreateAsyncScope();
+    var database = scope.ServiceProvider.GetRequiredService<ITFPulseDbContext>();
+    await database.Database.MigrateAsync();
+    return;
+}
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
@@ -42,7 +53,11 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// Render terminates TLS at its proxy; the container receives HTTP.
+if (!app.Configuration.GetValue<bool>("Hosting:HttpsTerminatedAtProxy"))
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseAuthorization();
 
