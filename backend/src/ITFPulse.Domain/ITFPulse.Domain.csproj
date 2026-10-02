@@ -6,4 +6,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Folder Include="Notifications\" />
+    <Folder Include="Posts\" />
+    <Folder Include="Users\" />
+  </ItemGroup>
+
 </Project>

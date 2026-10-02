@@ -1,0 +1,65 @@
+<app-page-title title="Create Post" subtitle="Share something with the IT Factory community.">
+</app-page-title>
+
+<app-card>
+  <form class="space-y-4" (ngSubmit)="createPost()" [attr.aria-busy]="isSaving()">
+    <div>
+      <label for="author-id" class="mb-1 block text-sm font-medium text-slate-700">Author ID (test only)</label>
+      <input
+        id="author-id"
+        name="authorId"
+        type="text"
+        required
+        class="w-full rounded-lg border border-slate-300 px-3 py-2"
+        readonly
+        aria-describedby="author-help"
+        [ngModel]="authorId()"
+        [disabled]="isSaving()"
+      />
+      <p id="author-help" class="mt-1 text-sm text-slate-500">
+        A dummy UUID is generated automatically for each new test post. In the real application,
+        the author ID comes from the logged-in user.
+      </p>
+    </div>
+
+    <div>
+      <label for="post-content" class="mb-1 block text-sm font-medium text-slate-700">Content</label>
+      <textarea
+        id="post-content"
+        name="content"
+        rows="5"
+        required
+        [maxlength]="maximumLength"
+        class="w-full rounded-lg border border-slate-300 px-3 py-2"
+        placeholder="What would you like to share?"
+        aria-describedby="content-count"
+        [ngModel]="content()"
+        (ngModelChange)="content.set($event)"
+        [disabled]="isSaving()"
+        #contentField="ngModel"
+      ></textarea>
+      <p id="content-count" class="mt-1 text-sm text-slate-500">{{ content().length }} / {{ maximumLength }} characters</p>
+      @if (contentField.touched && !content().trim() && state() !== 'saved') {
+        <p class="mt-1 text-sm text-red-600">Post content cannot be empty.</p>
+      }
+    </div>
+
+    <button type="submit" class="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" [disabled]="!canSubmit()">
+      @if (isSaving()) { Creating... } @else { Create Post }
+    </button>
+  </form>
+</app-card>
+
+<div class="mt-6" aria-live="polite">
+  @if (state() === 'saved' && post(); as createdPost) {
+    <app-card>
+      <h2 class="mb-2 text-lg font-semibold text-slate-900">Post created</h2>
+      <p class="break-all text-sm text-slate-700"><strong>Post ID:</strong> {{ createdPost.postId }}</p>
+    </app-card>
+  }
+  @if (state() === 'error') {
+    <app-card>
+      <p class="text-sm font-medium text-red-600" role="alert">{{ error() }}</p>
+    </app-card>
+  }
+</div>

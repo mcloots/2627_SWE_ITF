@@ -1,4 +1,8 @@
 using DotNetEnv;
+using ITFPulse.Application;
+using ITFPulse.Infrastructure;
+using ITFPulse.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 Env.Load();
 
@@ -7,6 +11,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddEnvironmentVariables("ITFPULSE_");
 
 // Add services to the container.
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure(builder.Configuration);
 
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
@@ -31,6 +37,15 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+// CI runs this command once before deploying the same image to Render.
+if (args.Contains("--migrate"))
+{
+    await using var scope = app.Services.CreateAsyncScope();
+    var database = scope.ServiceProvider.GetRequiredService<ITFPulseDbContext>();
+    await database.Database.MigrateAsync();
+    return;
+}
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
@@ -38,7 +53,11 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// Render terminates TLS at its proxy; the container receives HTTP.
+if (!app.Configuration.GetValue<bool>("Hosting:HttpsTerminatedAtProxy"))
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseAuthorization();
 
