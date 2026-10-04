@@ -3,7 +3,8 @@ name: CI/CD
 on:
   pull_request:
   push:
-    branches: [main, develop, 'test-*', 'test/**']
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       publish_only:
@@ -15,12 +16,13 @@ permissions:
   contents: read
 
 jobs:
-  checks:
-    name: Build and test
+  frontend_tests:
+    name: Frontend tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
           cache: npm
@@ -29,12 +31,14 @@ jobs:
         working-directory: frontend
       - run: npm test -- --watch=false
         working-directory: frontend
-      - run: npm run build -- --configuration production
-        working-directory: frontend
-        env:
-          NG_APP_API_BASE_URL: https://example.invalid/api
-          NG_APP_APP_NAME: ITF Pulse CI
-      - uses: actions/setup-dotnet@v4
+
+  backend_tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: '10.0.x'
       - run: dotnet build backend/ITFPulse.slnx --configuration Release
@@ -42,16 +46,109 @@ jobs:
       - run: dotnet run --project backend/tests/ITFPulse.Domain.Tests --configuration Release --no-build
       - run: dotnet run --project backend/tests/ITFPulse.Application.Tests --configuration Release --no-build
       - run: dotnet test backend/tests/ITFPulse.Architecture.Tests --configuration Release --no-build
-      - uses: docker/setup-buildx-action@v3
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run lint
+        working-directory: frontend
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Require a backend build without compiler or analyzer warnings
+        run: dotnet build backend/ITFPulse.slnx --configuration Release --warnaserror
+      - name: Check backend analyzer diagnostics
+        run: dotnet format analyzers backend/ITFPulse.slnx --no-restore --verify-no-changes --severity warn
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build -- --configuration production
+        working-directory: frontend
+        env:
+          NG_APP_API_BASE_URL: https://example.invalid/api
+          NG_APP_APP_NAME: ITF Pulse CI
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build backend/ITFPulse.slnx --configuration Release
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Verify API container build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: backend
           push: false
 
+  merge_gate:
+    name: Merge gate
+    needs: [frontend_tests, backend_tests, lint, build, semgrep]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every check to succeed
+        env:
+          CHECK_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          if ! jq -e 'all(.[]; .result == success)' <<< $CHECK_RESULTS; then
+            echo '::error::All tests, lint, build, and security checks must succeed. Failed, canceled, or skipped checks block merging.'
+            exit 1
+          fi
+
+  semgrep:
+    name: Semgrep security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: semgrep/semgrep:1.179.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Scan backend, frontend, and workflows
+        run: >-
+          semgrep scan
+          --config p/csharp
+          --config p/typescript
+          --config p/github-actions
+          --error
+          --strict
+          --metrics=off
+          --disable-version-check
+          --sarif-output=semgrep.sarif
+          .
+      - name: Save Semgrep report
+        if: always() && hashFiles('semgrep.sarif') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: semgrep-report
+          path: semgrep.sarif
+          retention-days: 14
+
   target:
     name: Select environment
-    if: github.event_name != 'pull_request'
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref_name == 'main' || github.ref_name == 'develop' ||
+       startsWith(github.ref_name, 'test-') || startsWith(github.ref_name, 'test/'))
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.select.outputs.environment }}
@@ -69,7 +166,7 @@ jobs:
 
   image:
     name: Publish API image
-    needs: [checks, target]
+    needs: [merge_gate, target]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -78,19 +175,19 @@ jobs:
       image: ${{ steps.name.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: name
         env:
           REPOSITORY: ${{ github.repository }}
         run: echo "image=ghcr.io/${REPOSITORY,,}/api" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: backend
           push: true
@@ -125,7 +222,7 @@ jobs:
       RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate environment setup
         env:
           DATABASE_CONNECTION_STRING: ${{ secrets.DATABASE_CONNECTION_STRING }}
@@ -134,7 +231,7 @@ jobs:
             if [ -z "${!key}" ]; then echo "Missing environment setting: $key" >&2; exit 1; fi
           done
           [[ "$NG_APP_API_BASE_URL" == https://*/api ]] || { echo 'API URL must use HTTPS and end in /api (no trailing slash).'; exit 1; }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
           cache: npm
@@ -143,7 +240,7 @@ jobs:
         working-directory: frontend
       - run: npm run build -- --configuration production
         working-directory: frontend
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -187,7 +284,7 @@ jobs:
       - name: Check API health
         run: curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 10 --max-time 30 "$NG_APP_API_BASE_URL/health"
       - name: Deploy Angular to the environment's Pages project
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}

@@ -1,0 +1,11 @@
+# Generated output and dependencies; source and workflows remain in scope.
+.git/
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/.angular/
+**/coverage/
+**/TestResults/
+**/Migrations/
+semgrep.sarif
