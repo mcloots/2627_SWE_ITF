@@ -138,3 +138,6 @@ docker-compose.override.yml
 
 uploads/
 storage/
+
+# Semgrep local scan report
+semgrep.sarif

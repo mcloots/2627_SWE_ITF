@@ -68,27 +68,73 @@ itf-pulse/
 
 ## CI/CD and environments
 
-[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) builds/tests pull requests and deploys pushes using this mapping:
+[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) runs CI on pushes and pull requests. Publishing and deployment require a push containing the result of a merged PR to one of these exact branches:
 
 | Git branch | GitHub environment | Cloudflare Pages project (example) | Render service (example) | Neon project (example) |
 | --- | --- | --- | --- | --- |
 | `main` | `prod` | `itf-pulse-prod` | `itf-pulse-api-prod` | `itf-pulse-prod` |
 | `develop` | `dev` | `itf-pulse-dev` | `itf-pulse-api-dev` | `itf-pulse-dev` |
-| `test-*` or `test/*` | `test` | `itf-pulse-test` | `itf-pulse-api-test` | `itf-pulse-test` |
+| `test` | `test` | `itf-pulse-test` | `itf-pulse-api-test` | `itf-pulse-test` |
 
-Replace the example names with your available names. All test branches share **one** test environment and database; this does not provision per-branch previews. Deleting a test branch does not delete the deployed environment or reset data. Other branches run CI when a pull request is opened, but do not deploy.
+Replace the example names with your available names. The `test` branch deploys to one test environment and database; feature branches do not provision previews. All branches run CI and Semgrep on pushes. The workflow verifies that the pushed SHA is the merge result of a merged PR whose target is the same deployment branch. Feature pushes, direct target-branch pushes without a matching merged PR, open PRs, merge-group checks, and manual runs do not publish images, migrate databases, or deploy.
 
 ### What the pipeline does
 
 1. Install frontend dependencies from `frontend/package-lock.json`, run Angular tests, and build Angular with production optimizations.
 2. Build the .NET 10 solution and run all three backend test projects. Domain/Application use executable xUnit v3 runners; Architecture uses VSTest, so a solution-wide `dotnet test` is not appropriate for the current mix.
 3. Verify the Linux API Docker image builds. Pull requests stop after checks and have no deployment secrets.
-4. Publish the API to `ghcr.io/<owner>/<repository>/api` with a unique commit/run tag. Deployments use its immutable SHA256 digest, recorded in the Actions summary.
+4. Run **Frontend tests**, **Backend tests**, **Lint**, **Build**, and **Semgrep security scan** in parallel. The **Merge gate** succeeds only when every job succeeds. Publish the API to `ghcr.io/<owner>/<repository>/api` only after both succeed, with a unique commit/run tag. Deployments use its immutable SHA256 digest, recorded in the Actions summary.
 5. Rebuild Angular with the chosen GitHub environment's public variables, then run the API image with `--migrate` against that environment's Neon database.
 6. Trigger Render through its API and poll that exact deployment until it is live (up to 20 minutes); check `/api/health`. This runs directly in GitHub Actions using Bash, `curl`, and `jq`, available on the Ubuntu runner; no Python scripts are needed.
 7. Upload `frontend/dist/itf-pulse/browser` to the selected Cloudflare Pages project.
 
-Deploy jobs are serialized per environment and running deploys are not automatically canceled. GitHub may replace a pending deployment with a newer pending run; concurrency does not guarantee FIFO ordering. Avoid pushing multiple competing test branches simultaneously. Releases across the database, API, and frontend are not atomic: use backwards-compatible migrations/API changes. The existing health endpoint checks API availability, not database connectivity.
+Deploy jobs are serialized per environment and running deploys are not automatically canceled. GitHub may replace a pending deployment with a newer pending run; concurrency does not guarantee FIFO ordering. Releases across the database, API, and frontend are not atomic: use backwards-compatible migrations/API changes. The existing health endpoint checks API availability, not database connectivity.
+
+### Semgrep security scanning
+
+The **Semgrep security scan** job in [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) runs on every branch push, pull request (including forks and Dependabot), and manual run. It uses Semgrep Community Edition without an account or token. A full repository scan runs each time, rather than scanning only the PR diff.
+
+The scanner version is pinned to `semgrep/semgrep:1.179.0`. The registry rulesets `p/csharp`, `p/typescript`, and `p/github-actions` check backend C#, frontend TypeScript, and GitHub workflows. These rulesets are downloaded at scan time and can evolve independently of the scanner version. `.semgrepignore` excludes dependencies and generated files. Metrics and version checks are disabled. Workflow actions are pinned to full commit SHAs; update those pins when upgrading actions.
+
+`--error` fails the job on any reported finding; `--strict` also fails on scan warnings such as parsing errors. Scanner/configuration failures also fail the job. Image publishing requires the Merge gate to succeed, so scan failures block migrations and deployment. Findings appear in the Actions log and the `semgrep-report` SARIF artifact, retained for 14 days when generated.
+
+Activate the required-check ruleset described below to block merges when any CI check fails. No scanner account or token is needed.
+
+Semgrep CE scans for security patterns; it does not provide a coverage quality gate or dependency vulnerability scanning. Its C# engine has limited support for modern language syntax and analysis across functions/files. Review scan errors rather than treating skipped code as scanned. See [Semgrep CE language support](https://semgrep.dev/docs/semgrep-ce-languages) and the [CLI reference](https://semgrep.dev/docs/cli-reference).
+
+To run the same scan locally from the repository root with Docker:
+
+```sh
+docker run --rm -v $PWD:/src -w /src semgrep/semgrep:1.179.0 semgrep scan --config p/csharp --config p/typescript --config p/github-actions --error --strict --metrics=off --disable-version-check --sarif-output=semgrep.sarif .
+```
+
+### Blocking merges until every check passes
+
+A failing workflow blocks deployment but does **not** automatically block merges. GitHub repository rules must also be activated. [`.github/required-checks.ruleset.json`](.github/required-checks.ruleset.json) is an importable ruleset for the `main`, `develop`, and `test` deployment branches. The file alone does not activate rules on GitHub.
+
+1. Push the updated workflow to a feature branch and open a PR so the new check names are registered in GitHub.
+2. Open **Settings > Rules > Rulesets > New ruleset > Import a ruleset** and select `.github/required-checks.ruleset.json`.
+3. Verify **Enforcement status: Active**, the target branches, and an **empty Bypass list**, then save. Replace obsolete required checks such as **Build and test** in existing protections.
+4. Confirm the following six checks are required, with **GitHub Actions** as their expected source (the ruleset pins integration ID `15368`): **Frontend tests**, **Backend tests**, **Lint**, **Build**, **Semgrep security scan**, and **Merge gate**.
+5. Verify a PR with a failing check cannot merge. After correcting it and pushing a new commit, all checks must run successfully. If the target branch advances, update the PR branch and rerun its checks.
+
+The ruleset requires PRs, up-to-date status checks, and blocks force pushes. It adds no bypass actors, including administrators. The workflow runs on every push, PR, manual run, and merge-group check event. There are no path filters or optional test/lint/security jobs. The **Merge gate** uses `always()` and explicitly rejects any failed, canceled, or skipped dependency; this prevents a skipped job from satisfying the aggregate check. Pending required checks also prevent merging.
+
+Frontend lint uses recommended ESLint, TypeScript, Angular, and template accessibility rules, including inline templates. `npm run lint` treats warnings as failures. Backend lint first builds with `--warnaserror` to reject compiler and analyzer warnings, then verifies analyzer code fixes with `dotnet format analyzers --verify-no-changes --severity warn`; it does not impose whitespace formatting. All three backend test projects run, using their existing runners. To check locally:
+
+```sh
+cd frontend
+npm run lint
+npm test -- --watch=false
+cd ..
+dotnet format analyzers backend/ITFPulse.slnx --verify-no-changes --severity warn
+dotnet build backend/ITFPulse.slnx --configuration Release
+dotnet run --project backend/tests/ITFPulse.Domain.Tests --configuration Release --no-build
+dotnet run --project backend/tests/ITFPulse.Application.Tests --configuration Release --no-build
+dotnet test backend/tests/ITFPulse.Architecture.Tests --configuration Release --no-build
+```
+
+GitHub repository administrators can still edit or remove rules; this ruleset controls merging while active. Ruleset availability depends on repository visibility and GitHub plan. See [GitHub ruleset setup](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository).
 
 ### 1. GitHub setup
 
@@ -107,9 +153,9 @@ Under **Settings → Environments**, create exactly `dev`, `test`, and `prod`. A
 | Secret | `RENDER_API_KEY` | Render account API key with access to the service |
 | Secret | `DATABASE_CONNECTION_STRING` | Direct/unpooled Neon **Npgsql-format** connection string for migrations |
 
-Restrict deployment branches for `prod` to `main`, and `dev` to `develop`. For `test`, allow `test-*` and `test/*` (add patterns for any deeper slash levels you use). Only trusted contributors should be able to change code/workflows on deployment branches, since those jobs receive secrets. Where your GitHub plan supports it, require a reviewer for prod; deployment then waits for approval. Require the **Build and test** status check on protected `main` and `develop`, and promote through pull requests.
+Restrict deployment branches for `prod` to `main`, and `dev` to `develop`. For `test`, allow only the `test` branch. Only trusted contributors should be able to change code/workflows on deployment branches, since those jobs receive secrets. Where your GitHub plan supports it, require a reviewer for prod; deployment then waits for approval. Activate the required-check ruleset below and promote through pull requests.
 
-The workflow lives in the repository; merge it to the default branch so **Actions → CI/CD → Run workflow** becomes available. Manual runs use the selected branch's environment. Unsupported branches fail environment selection.
+The workflow lives in the repository; merge it to the default branch so **Actions → CI/CD → Run workflow** becomes available. Manual runs perform CI checks only. Publishing and deployment run only after a PR merge to `main`, `develop`, or `test`, and only when all CI checks succeed. The read-only GitHub API check supports merge commits, squash merges, and rebase merges; API errors stop release eligibility verification.
 
 ### 2. Neon: three isolated databases
 
@@ -146,7 +192,7 @@ Pages provides SPA fallback when there is no top-level `404.html`, so Angular ro
 
 Render needs an existing image before you can create an image-backed service:
 
-1. Merge this workflow to your default branch. Under **Actions → CI/CD → Run workflow**, choose `main` or `develop` and enable **publish_only**. This runs checks and publishes an image without requiring cloud credentials or deploying anything. An initial automatic deployment before setup may fail for missing settings; this bootstrap run is intentional.
+1. Merge the updated workflow through a PR to `develop` or `main`. The post-merge push runs all checks and publishes the API image. If cloud services are not yet configured, the deployment then fails validation, while the published image remains available for Render setup. Manual workflow runs perform checks only.
 2. Copy the full `ghcr.io/.../api@sha256:...` reference from the **Publish API image** summary.
 3. Choose package visibility. For a public image, explicitly make the GHCR package public after its first publication. For a private image, create a GitHub **PAT (classic)** with `read:packages`, authorize SSO if required, and configure a Render registry credential using your GitHub username and that token. GitHub Actions uses `GITHUB_TOKEN`; Render needs its own persistent pull credential. See [GHCR authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 4. In Render, create three **Web Services → Existing Image** services using that image reference. Choose the desired region and Free instance type if appropriate. Do not create Git-source Docker services: this workflow deploys prebuilt GHCR images.
@@ -169,18 +215,9 @@ All services use the same GHCR repository path. The workflow supplies a differen
 
 ### 5. Deploy and promote
 
-After all three GitHub environments and cloud services are configured, run **CI/CD** on `develop` with `publish_only` unchecked. Confirm the workflow succeeds, the Pages site loads, `/api/health` responds, and browser API requests pass CORS. The initial Render service can start before tables exist; the first full workflow applies migrations.
+After all three GitHub environments and cloud services are configured, merge a PR into `develop`. Confirm the post-merge workflow succeeds, the Pages site loads, `/api/health` responds, and browser API requests pass CORS. The initial Render service can start before tables exist; the first full deployment applies migrations.
 
-Create a test branch from dev locally:
-
-```sh
-git switch develop
-git pull --ff-only
-git switch -c test-release-1
-git push -u origin test-release-1
-```
-
-`test/release-1` also works. Subsequent pushes redeploy the shared test environment. Branch ancestry is a team convention, not enforced by CI: Git does not store a permanent “created from” relationship. Merge tested changes through your normal PR process into `main` to deploy prod. All environments use Angular production optimization; `dev` is a deployment destination, not an unoptimized Angular build.
+Use feature branches for development, then promote changes through PRs targeting `develop` (dev), `test` (test), and `main` (prod). Create `test` from `develop` if it does not exist yet; branch creation alone does not deploy unless that SHA is itself the result of a PR merged into `test`. Branch ancestry is a team convention. All environments use Angular production optimization; `dev` is a deployment destination, not an unoptimized Angular build.
 
 ### Local development and Docker
 
