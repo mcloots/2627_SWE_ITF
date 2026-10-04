@@ -22,7 +22,7 @@ namespace ITFPulse.Api.Controllers
 
             var response = new HealthResponse
             {
-                Status = "Healthy",
+                Status = "Healthy - CI/CD Pipeline implemented",
                 Timestamp = DateTime.UtcNow,
                 Service = serviceName
             };
