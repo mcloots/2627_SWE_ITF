@@ -6,11 +6,6 @@ on:
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
-    inputs:
-      publish_only:
-        description: 'Bootstrap: publish the image without deploying (create Render services afterwards)'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -110,7 +105,7 @@ jobs:
         env:
           CHECK_RESULTS: ${{ toJSON(needs) }}
         run: |
-          if ! jq -e 'all(.[]; .result == success)' <<< $CHECK_RESULTS; then
+          if ! jq -e 'all(.[]; .result == "success")' <<< "$CHECK_RESULTS"; then
             echo '::error::All tests, lint, build, and security checks must succeed. Failed, canceled, or skipped checks block merging.'
             exit 1
           fi
@@ -144,29 +139,52 @@ jobs:
           retention-days: 14
 
   target:
-    name: Select environment
+    name: Verify merged PR and select environment
     if: >-
-      github.event_name != 'pull_request' &&
-      (github.ref_name == 'main' || github.ref_name == 'develop' ||
-       startsWith(github.ref_name, 'test-') || startsWith(github.ref_name, 'test/'))
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' ||
+       github.ref == 'refs/heads/test')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       environment: ${{ steps.select.outputs.environment }}
+      eligible: ${{ steps.merged.outputs.eligible }}
     steps:
+      - name: Verify the pushed commit is a merged PR result
+        id: merged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          eligible=$(gh api --paginate --slurp \
+            "repos/$REPOSITORY/commits/$COMMIT_SHA/pulls?per_page=100" \
+            | jq --arg branch "$BRANCH" --arg sha "$COMMIT_SHA" \
+              'flatten | any(.[]; .merged_at != null and .base.ref == $branch and .merge_commit_sha == $sha)')
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+          if [ "$eligible" != 'true' ]; then
+            echo 'No merged PR for this branch and commit; publishing and deployment are skipped.'
+          fi
       - id: select
+        if: steps.merged.outputs.eligible == 'true'
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
           case "$BRANCH" in
             main) echo 'environment=prod' >> "$GITHUB_OUTPUT" ;;
             develop) echo 'environment=dev' >> "$GITHUB_OUTPUT" ;;
-            test-*|test/*) echo 'environment=test' >> "$GITHUB_OUTPUT" ;;
-            *) echo 'Deployments require main, develop, test-* or test/*.' >&2; exit 1 ;;
+            test) echo 'environment=test' >> "$GITHUB_OUTPUT" ;;
+            *) echo 'Deployments require main, develop or test.' >&2; exit 1 ;;
           esac
 
   image:
     name: Publish API image
     needs: [merge_gate, target]
+    if: github.event_name == 'push' && needs.target.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -202,7 +220,7 @@ jobs:
   deploy:
     name: Deploy ${{ needs.target.outputs.environment }}
     needs: [target, image]
-    if: inputs.publish_only != true
+    if: github.event_name == 'push' && needs.target.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: ${{ needs.target.outputs.environment }}

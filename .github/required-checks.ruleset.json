@@ -8,8 +8,7 @@
       "include": [
         "refs/heads/main",
         "refs/heads/develop",
-        "refs/heads/test-*",
-        "refs/heads/test/**/*"
+        "refs/heads/test"
       ],
       "exclude": []
     }

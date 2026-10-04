@@ -68,15 +68,15 @@ itf-pulse/
 
 ## CI/CD and environments
 
-[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) builds/tests pull requests and deploys pushes using this mapping:
+[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) runs CI on pushes and pull requests. Publishing and deployment require a push containing the result of a merged PR to one of these exact branches:
 
 | Git branch | GitHub environment | Cloudflare Pages project (example) | Render service (example) | Neon project (example) |
 | --- | --- | --- | --- | --- |
 | `main` | `prod` | `itf-pulse-prod` | `itf-pulse-api-prod` | `itf-pulse-prod` |
 | `develop` | `dev` | `itf-pulse-dev` | `itf-pulse-api-dev` | `itf-pulse-dev` |
-| `test-*` or `test/*` | `test` | `itf-pulse-test` | `itf-pulse-api-test` | `itf-pulse-test` |
+| `test` | `test` | `itf-pulse-test` | `itf-pulse-api-test` | `itf-pulse-test` |
 
-Replace the example names with your available names. All test branches share **one** test environment and database; this does not provision per-branch previews. Deleting a test branch does not delete the deployed environment or reset data. All branches run CI and Semgrep on pushes, but only the branches in the table deploy.
+Replace the example names with your available names. The `test` branch deploys to one test environment and database; feature branches do not provision previews. All branches run CI and Semgrep on pushes. The workflow verifies that the pushed SHA is the merge result of a merged PR whose target is the same deployment branch. Feature pushes, direct target-branch pushes without a matching merged PR, open PRs, merge-group checks, and manual runs do not publish images, migrate databases, or deploy.
 
 ### What the pipeline does
 
@@ -88,7 +88,7 @@ Replace the example names with your available names. All test branches share **o
 6. Trigger Render through its API and poll that exact deployment until it is live (up to 20 minutes); check `/api/health`. This runs directly in GitHub Actions using Bash, `curl`, and `jq`, available on the Ubuntu runner; no Python scripts are needed.
 7. Upload `frontend/dist/itf-pulse/browser` to the selected Cloudflare Pages project.
 
-Deploy jobs are serialized per environment and running deploys are not automatically canceled. GitHub may replace a pending deployment with a newer pending run; concurrency does not guarantee FIFO ordering. Avoid pushing multiple competing test branches simultaneously. Releases across the database, API, and frontend are not atomic: use backwards-compatible migrations/API changes. The existing health endpoint checks API availability, not database connectivity.
+Deploy jobs are serialized per environment and running deploys are not automatically canceled. GitHub may replace a pending deployment with a newer pending run; concurrency does not guarantee FIFO ordering. Releases across the database, API, and frontend are not atomic: use backwards-compatible migrations/API changes. The existing health endpoint checks API availability, not database connectivity.
 
 ### Semgrep security scanning
 
@@ -110,7 +110,7 @@ docker run --rm -v $PWD:/src -w /src semgrep/semgrep:1.179.0 semgrep scan --conf
 
 ### Blocking merges until every check passes
 
-A failing workflow blocks deployment but does **not** automatically block merges. GitHub repository rules must also be activated. [`.github/required-checks.ruleset.json`](.github/required-checks.ruleset.json) is an importable ruleset for `main`, `develop`, `test-*`, and `test/**` deployment branches. The file alone does not activate rules on GitHub.
+A failing workflow blocks deployment but does **not** automatically block merges. GitHub repository rules must also be activated. [`.github/required-checks.ruleset.json`](.github/required-checks.ruleset.json) is an importable ruleset for the `main`, `develop`, and `test` deployment branches. The file alone does not activate rules on GitHub.
 
 1. Push the updated workflow to a feature branch and open a PR so the new check names are registered in GitHub.
 2. Open **Settings > Rules > Rulesets > New ruleset > Import a ruleset** and select `.github/required-checks.ruleset.json`.
@@ -153,9 +153,9 @@ Under **Settings → Environments**, create exactly `dev`, `test`, and `prod`. A
 | Secret | `RENDER_API_KEY` | Render account API key with access to the service |
 | Secret | `DATABASE_CONNECTION_STRING` | Direct/unpooled Neon **Npgsql-format** connection string for migrations |
 
-Restrict deployment branches for `prod` to `main`, and `dev` to `develop`. For `test`, allow `test-*` and `test/*` (add patterns for any deeper slash levels you use). Only trusted contributors should be able to change code/workflows on deployment branches, since those jobs receive secrets. Where your GitHub plan supports it, require a reviewer for prod; deployment then waits for approval. Activate the required-check ruleset below and promote through pull requests.
+Restrict deployment branches for `prod` to `main`, and `dev` to `develop`. For `test`, allow only the `test` branch. Only trusted contributors should be able to change code/workflows on deployment branches, since those jobs receive secrets. Where your GitHub plan supports it, require a reviewer for prod; deployment then waits for approval. Activate the required-check ruleset below and promote through pull requests.
 
-The workflow lives in the repository; merge it to the default branch so **Actions → CI/CD → Run workflow** becomes available. Manual runs use the selected branch's environment. Other branches run checks and analysis without deployment.
+The workflow lives in the repository; merge it to the default branch so **Actions → CI/CD → Run workflow** becomes available. Manual runs perform CI checks only. Publishing and deployment run only after a PR merge to `main`, `develop`, or `test`, and only when all CI checks succeed. The read-only GitHub API check supports merge commits, squash merges, and rebase merges; API errors stop release eligibility verification.
 
 ### 2. Neon: three isolated databases
 
@@ -192,7 +192,7 @@ Pages provides SPA fallback when there is no top-level `404.html`, so Angular ro
 
 Render needs an existing image before you can create an image-backed service:
 
-1. Merge this workflow to your default branch. Under **Actions → CI/CD → Run workflow**, choose `main` or `develop` and enable **publish_only**. This runs checks and publishes an image without requiring cloud credentials or deploying anything. An initial automatic deployment before setup may fail for missing settings; this bootstrap run is intentional.
+1. Merge the updated workflow through a PR to `develop` or `main`. The post-merge push runs all checks and publishes the API image. If cloud services are not yet configured, the deployment then fails validation, while the published image remains available for Render setup. Manual workflow runs perform checks only.
 2. Copy the full `ghcr.io/.../api@sha256:...` reference from the **Publish API image** summary.
 3. Choose package visibility. For a public image, explicitly make the GHCR package public after its first publication. For a private image, create a GitHub **PAT (classic)** with `read:packages`, authorize SSO if required, and configure a Render registry credential using your GitHub username and that token. GitHub Actions uses `GITHUB_TOKEN`; Render needs its own persistent pull credential. See [GHCR authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 4. In Render, create three **Web Services → Existing Image** services using that image reference. Choose the desired region and Free instance type if appropriate. Do not create Git-source Docker services: this workflow deploys prebuilt GHCR images.
@@ -215,18 +215,9 @@ All services use the same GHCR repository path. The workflow supplies a differen
 
 ### 5. Deploy and promote
 
-After all three GitHub environments and cloud services are configured, run **CI/CD** on `develop` with `publish_only` unchecked. Confirm the workflow succeeds, the Pages site loads, `/api/health` responds, and browser API requests pass CORS. The initial Render service can start before tables exist; the first full workflow applies migrations.
+After all three GitHub environments and cloud services are configured, merge a PR into `develop`. Confirm the post-merge workflow succeeds, the Pages site loads, `/api/health` responds, and browser API requests pass CORS. The initial Render service can start before tables exist; the first full deployment applies migrations.
 
-Create a test branch from dev locally:
-
-```sh
-git switch develop
-git pull --ff-only
-git switch -c test-release-1
-git push -u origin test-release-1
-```
-
-`test/release-1` also works. Subsequent pushes redeploy the shared test environment. Branch ancestry is a team convention, not enforced by CI: Git does not store a permanent “created from” relationship. Merge tested changes through your normal PR process into `main` to deploy prod. All environments use Angular production optimization; `dev` is a deployment destination, not an unoptimized Angular build.
+Use feature branches for development, then promote changes through PRs targeting `develop` (dev), `test` (test), and `main` (prod). Create `test` from `develop` if it does not exist yet; branch creation alone does not deploy unless that SHA is itself the result of a PR merged into `test`. Branch ancestry is a team convention. All environments use Angular production optimization; `dev` is a deployment destination, not an unoptimized Angular build.
 
 ### Local development and Docker
 
