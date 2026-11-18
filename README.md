@@ -68,15 +68,15 @@ itf-pulse/
 
 ## CI/CD and environments
 
-[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) runs CI on pushes and pull requests. Publishing and deployment require a push containing the result of a merged PR to one of these exact branches:
+[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) runs CI on pushes and pull requests. Publishing and deployment require a push containing the result of a merged PR to a branch matching this mapping:
 
 | Git branch | GitHub environment | Cloudflare Pages project (example) | Render service (example) | Neon project (example) |
 | --- | --- | --- | --- | --- |
 | `main` | `prod` | `itf-pulse-prod` | `itf-pulse-api-prod` | `itf-pulse-prod` |
 | `develop` | `dev` | `itf-pulse-dev` | `itf-pulse-api-dev` | `itf-pulse-dev` |
-| `test` | `test` | `itf-pulse-test` | `itf-pulse-api-test` | `itf-pulse-test` |
+| `test`, `test-*`, or `test/**` | `test` | `itf-pulse-test` | `itf-pulse-api-test` | `itf-pulse-test` |
 
-Replace the example names with your available names. The `test` branch deploys to one test environment and database; feature branches do not provision previews. All branches run CI and Semgrep on pushes. The workflow verifies that the pushed SHA is the merge result of a merged PR whose target is the same deployment branch. Feature pushes, direct target-branch pushes without a matching merged PR, open PRs, merge-group checks, and manual runs do not publish images, migrate databases, or deploy.
+Replace the example names with your available names. The `test`, `test-*`, and `test/**` branches share one test environment and database; feature branches do not provision previews. All branches run CI and Semgrep on pushes. The workflow verifies that the pushed SHA is the merge result of a merged PR whose target is the same deployment branch. Feature pushes, direct target-branch pushes without a matching merged PR, open PRs, merge-group checks, and manual runs do not publish images, migrate databases, or deploy.
 
 ### What the pipeline does
 
@@ -110,7 +110,7 @@ docker run --rm -v $PWD:/src -w /src semgrep/semgrep:1.179.0 semgrep scan --conf
 
 ### Blocking merges until every check passes
 
-A failing workflow blocks deployment but does **not** automatically block merges. GitHub repository rules must also be activated. [`.github/required-checks.ruleset.json`](.github/required-checks.ruleset.json) is an importable ruleset for the `main`, `develop`, and `test` deployment branches. The file alone does not activate rules on GitHub.
+A failing workflow blocks deployment but does **not** automatically block merges. GitHub repository rules must also be activated. [`.github/required-checks.ruleset.json`](.github/required-checks.ruleset.json) is an importable ruleset for `main`, `develop`, `test`, `test-*`, and `test/**` deployment branches. The file alone does not activate rules on GitHub.
 
 1. Push the updated workflow to a feature branch and open a PR so the new check names are registered in GitHub.
 2. Open **Settings > Rules > Rulesets > New ruleset > Import a ruleset** and select `.github/required-checks.ruleset.json`.
@@ -153,9 +153,9 @@ Under **Settings → Environments**, create exactly `dev`, `test`, and `prod`. A
 | Secret | `RENDER_API_KEY` | Render account API key with access to the service |
 | Secret | `DATABASE_CONNECTION_STRING` | Direct/unpooled Neon **Npgsql-format** connection string for migrations |
 
-Restrict deployment branches for `prod` to `main`, and `dev` to `develop`. For `test`, allow only the `test` branch. Only trusted contributors should be able to change code/workflows on deployment branches, since those jobs receive secrets. Where your GitHub plan supports it, require a reviewer for prod; deployment then waits for approval. Activate the required-check ruleset below and promote through pull requests.
+Restrict deployment branches for `prod` to `main`, and `dev` to `develop`. For the `test` environment, allow `test`, `test-*`, and `test/*`; GitHub environment patterns treat slashes separately, so add patterns for deeper branches you use (e.g. `test/*/*`). Only trusted contributors should be able to change code/workflows on deployment branches, since those jobs receive secrets. Where your GitHub plan supports it, require a reviewer for prod; deployment then waits for approval. Activate the required-check ruleset below and promote through pull requests.
 
-The workflow lives in the repository; merge it to the default branch so **Actions → CI/CD → Run workflow** becomes available. Manual runs perform CI checks only. Publishing and deployment run only after a PR merge to `main`, `develop`, or `test`, and only when all CI checks succeed. The read-only GitHub API check supports merge commits, squash merges, and rebase merges; API errors stop release eligibility verification.
+The workflow lives in the repository; merge it to the default branch so **Actions → CI/CD → Run workflow** becomes available. Manual runs perform CI checks only. Publishing and deployment run only after a PR merge to `main`, `develop`, `test`, `test-*`, or `test/**`, and only when all CI checks succeed. The read-only GitHub API check supports merge commits, squash merges, and rebase merges; API errors stop release eligibility verification.
 
 ### 2. Neon: three isolated databases
 
@@ -217,7 +217,7 @@ All services use the same GHCR repository path. The workflow supplies a differen
 
 After all three GitHub environments and cloud services are configured, merge a PR into `develop`. Confirm the post-merge workflow succeeds, the Pages site loads, `/api/health` responds, and browser API requests pass CORS. The initial Render service can start before tables exist; the first full deployment applies migrations.
 
-Use feature branches for development, then promote changes through PRs targeting `develop` (dev), `test` (test), and `main` (prod). Create `test` from `develop` if it does not exist yet; branch creation alone does not deploy unless that SHA is itself the result of a PR merged into `test`. Branch ancestry is a team convention. All environments use Angular production optimization; `dev` is a deployment destination, not an unoptimized Angular build.
+Use feature branches for development, then promote changes through PRs targeting `develop` (dev), `test`, `test-*`, or `test/**` (the shared test environment), and `main` (prod). Create test destination branches from `develop` when needed; branch creation alone does not deploy unless that SHA is itself the result of a PR merged into that same branch. Branch ancestry is a team convention. All environments use Angular production optimization; `dev` is a deployment destination, not an unoptimized Angular build.
 
 ### Local development and Docker
 

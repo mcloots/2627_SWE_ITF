@@ -143,7 +143,8 @@ jobs:
     if: >-
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' ||
-       github.ref == 'refs/heads/test')
+       github.ref == 'refs/heads/test' || startsWith(github.ref, 'refs/heads/test-') ||
+       startsWith(github.ref, 'refs/heads/test/'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -177,8 +178,8 @@ jobs:
           case "$BRANCH" in
             main) echo 'environment=prod' >> "$GITHUB_OUTPUT" ;;
             develop) echo 'environment=dev' >> "$GITHUB_OUTPUT" ;;
-            test) echo 'environment=test' >> "$GITHUB_OUTPUT" ;;
-            *) echo 'Deployments require main, develop or test.' >&2; exit 1 ;;
+            test|test-*|test/*) echo 'environment=test' >> "$GITHUB_OUTPUT" ;;
+            *) echo 'Deployments require main, develop, test, test-* or test/**.' >&2; exit 1 ;;
           esac
 
   image:
