@@ -4,7 +4,9 @@ using ITFPulse.Infrastructure;
 using ITFPulse.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
-Env.Load();
+// Explicit environment settings (for example a disposable workshop database)
+// take precedence over local .env defaults.
+Env.NoClobber().Load();
 
 var builder = WebApplication.CreateBuilder(args);
 

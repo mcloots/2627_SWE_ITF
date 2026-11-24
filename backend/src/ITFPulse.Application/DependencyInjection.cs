@@ -1,4 +1,5 @@
 ﻿using ITFPulse.Application.Posts.CreatePosts;
+using ITFPulse.Application.Posts.GetPosts;
 using Microsoft.Extensions.DependencyInjection;
 using System;
 using System.Collections.Generic;
@@ -12,6 +13,7 @@ namespace ITFPulse.Application
             this IServiceCollection services)
         {
             services.AddScoped<CreatePostHandler>();
+            services.AddScoped<GetPostHandler>();
 
             return services;
         }

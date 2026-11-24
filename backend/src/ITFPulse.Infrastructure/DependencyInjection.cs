@@ -1,5 +1,6 @@
 ﻿using ITFPulse.Application.Abstractions;
 using ITFPulse.Application.Abstractions.Persistence;
+using ITFPulse.Application.Posts.GetPosts;
 using ITFPulse.Infrastructure.Persistence;
 using ITFPulse.Infrastructure.Persistence.Repositories;
 using ITFPulse.Infrastructure.Time;
@@ -24,6 +25,7 @@ namespace ITFPulse.Infrastructure
                 options.UseNpgsql(connectionString));
 
             services.AddScoped<IPostRepository, PostRepository>();
+            services.AddScoped<IPostReader, PostReader>();
 
             services.AddSingleton<IClock, SystemClock>();
 

@@ -3,6 +3,8 @@
 **Deployment setup:** see [CI/CD and environments](#cicd-and-environments) below for the complete GitHub, Cloudflare, Render, Neon, and Docker checklist.
 **The heartbeat of the IT Factory community.**
 
+**k6 workshop:** see [Load testing ITF Pulse](performance/k6/README.md) for runnable read/write API tests, a dashboard, browser throttling, and exercises on traffic, response times, correctness, and capacity.
+
 Welcome to **ITF Pulse**, the official Software Engineering project platform used throughout this course.
 
 This repository contains the **starter structure** for a modern full-stack social media platform where students will design, build, and evolve a scalable application using professional engineering practices.

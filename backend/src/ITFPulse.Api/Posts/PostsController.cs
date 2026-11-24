@@ -1,4 +1,5 @@
 ﻿using ITFPulse.Application.Posts.CreatePosts;
+using ITFPulse.Application.Posts.GetPosts;
 using ITFPulse.Contracts.Posts;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -14,6 +15,27 @@ namespace ITFPulse.Api.Posts
         public PostsController(CreatePostHandler handler)
         {
             _handler = handler;
+        }
+
+        [HttpGet("{postId:guid}")]
+        [ProducesResponseType<GetPostResponse>(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<ActionResult<GetPostResponse>> GetById(
+            Guid postId,
+            [FromServices] GetPostHandler handler,
+            CancellationToken cancellationToken)
+        {
+            var post = await handler.Handle(postId, cancellationToken);
+            if (post is null)
+            {
+                return NotFound();
+            }
+
+            return Ok(new GetPostResponse(
+                post.PostId,
+                post.AuthorId,
+                post.Content,
+                post.CreatedAt));
         }
 
         [HttpPost]
