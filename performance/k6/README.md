@@ -18,6 +18,14 @@ Start Docker Desktop and install k6 as described in section 2. After installing 
 
 Leave that terminal open. The script creates or reuses only `itfpulse-k6-db` on `127.0.0.1:55432`, checks its settings, and configures the local API/CORS settings from section 2. It does not reset existing workshop data. Use `-PrepareOnly` to prepare the database and apply migrations without starting the API.
 
+On Windows, stop the running API before rebuilding or running migrations: it locks the DLLs in its output directory. The start script detects this and reports the process ID. To stop this repository's running Release API and start it again, use:
+
+```powershell
+./performance/k6/start-workshop.ps1 -Restart
+```
+
+Use the same script with `-Restart -PrepareOnly` to stop the API, build, and migrate without starting another instance. When following the manual commands in section 2, first stop the previous API with Ctrl+C in its terminal.
+
 In a second terminal, verify the complete API path before starting the exercises:
 
 ```powershell

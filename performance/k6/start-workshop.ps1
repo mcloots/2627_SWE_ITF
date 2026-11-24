@@ -1,10 +1,26 @@
 [CmdletBinding()]
-param([switch]$PrepareOnly)
+param(
+    [switch]$PrepareOnly,
+    [switch]$Restart
+)
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $apiProject = Join-Path $repositoryRoot 'backend/src/ITFPulse.Api'
 $containerName = 'itfpulse-k6-db'
+
+# Windows locks the API's output DLLs while it is running. Check before building
+# or migrating, and only stop this repository's Release API when requested.
+$apiExecutable = Join-Path $apiProject 'bin/Release/net10.0/ITFPulse.Api.exe'
+$runningApis = @(Get-Process -Name ITFPulse.Api -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -eq $apiExecutable })
+foreach ($runningApi in $runningApis) {
+    if (!$Restart) {
+        throw "The workshop API is already running (PID $($runningApi.Id)). Stop it with Ctrl+C in its terminal, or rerun this script with -Restart before rebuilding/migrating."
+    }
+    Stop-Process -InputObject $runningApi -ErrorAction Stop
+    if (!$runningApi.WaitForExit(10000)) { throw 'The previous workshop API did not stop.' }
+}
 
 Get-Command docker, dotnet -ErrorAction Stop | Out-Null
 docker info --format '{{.ServerVersion}}' | Out-Null
